@@ -207,3 +207,7 @@ Dragging resizes adjacent columns without moving later boundaries; focused divid
 Left/Right keys. The Name column adapts to window/panel width. Details fills its requested width
 and wraps its contents rather than letting text size the pane. These patterns follow the supplied PdfCraft reference without
 copying its branding, PDF-specific workflows or toolkit forks.
+
+Source and collection navigation labels truncate within the requested sidebar width, retaining
+full accessible names and hover text. Content must not impose a larger minimum width on either
+resizable pane; scrolling fills the requested pane geometry.

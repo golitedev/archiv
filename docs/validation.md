@@ -5,7 +5,7 @@ Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, nev
 ## Automated checks
 
 Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
-with warnings denied, 45 passing tests and a native debug build. The tests cover byte-preserving identities,
+with warnings denied, 46 passing tests and a native debug build. The tests cover byte-preserving identities,
 merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
 policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
@@ -38,3 +38,12 @@ No native Wayland/hardware compositor, complete IME/screen-reader, mixed-DPI or 
 discovery acceptance is claimed. Snapshot/descriptor checks do not close the Linux final-filename
 race against hostile concurrent writers. See file-actions.md for exact scope, staging, cancellation
 and durability limitations. No copy metadata preservation or system file-clipboard interoperability.
+
+## Sources sidebar sizing
+
+A synthetic drag regression with long source and collection names failed before the fix: labels
+forced the workspace's Name header to x=562.94 and the first 4-point pointer move did not move
+the divider. The sidebar now fills its requested width and truncates navigation labels, with
+full names/physical paths available on hover. The test checks small incremental expansion,
+contraction and released geometry; the existing Details drag regression remains in the suite.
+Native Light/Dark checks use the same synthetic long labels and actual splitter drags.

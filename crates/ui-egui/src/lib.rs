@@ -371,7 +371,7 @@ impl ArchivApp {
                 .min_size(165.0)
                 .frame(egui::Frame::new().fill(t.panel).inner_margin(14))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                         ui.small("COLLECTIONS");
                         ui.add_space(6.0);
                         if self.browser.library().collections.is_empty() {
@@ -382,10 +382,15 @@ impl ArchivApp {
                                 ui.horizontal(|ui| {
                                     ui.add(widgets::icon("collection", 17.0, t.media));
                                     if ui
-                                        .selectable_label(
-                                            self.browser.view().collection == Some(collection.id),
-                                            &collection.label,
+                                        .add(
+                                            egui::Button::selectable(
+                                                self.browser.view().collection == Some(collection.id),
+                                                (),
+                                            )
+                                            .left_text(&collection.label)
+                                            .truncate(),
                                         )
+                                        .on_hover_text(&collection.label)
                                         .clicked()
                                     {
                                         command = Some(Command::BrowseCollection(collection.id));
@@ -406,8 +411,12 @@ impl ArchivApp {
                                     let current =
                                         self.browser.view().location.as_ref().is_some_and(|l| l.source == source.id);
                                     if ui
-                                        .selectable_label(current, &source.label)
-                                        .on_hover_text(display_name(source.root.as_os_str()))
+                                        .add(egui::Button::selectable(current, ()).left_text(&source.label).truncate())
+                                        .on_hover_text(format!(
+                                            "{}\n{}",
+                                            source.label,
+                                            display_name(source.root.as_os_str())
+                                        ))
                                         .clicked()
                                     {
                                         command = Some(Command::Navigate(Location {

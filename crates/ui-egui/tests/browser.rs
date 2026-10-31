@@ -536,3 +536,50 @@ fn context_menus_copy_paste_and_rename_the_clicked_physical_item() {
     assert!(!fixture.path().join("notes.txt").exists());
     assert_eq!(std::fs::read(fixture.path().join("out/notes.txt")).unwrap(), b"safe");
 }
+
+#[test]
+fn sources_splitter_tracks_small_drags_with_long_navigation_labels() {
+    use archiv_core::{
+        Location, RelativePath, Source, SourceId,
+        library::{Collection, LibrarySettings},
+    };
+    let fixture = tempfile::tempdir().unwrap();
+    let mut browser = Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap();
+    let source = Source {
+        id: SourceId(1),
+        root: fixture.path().to_owned(),
+        label: "A long synthetic physical source name that must not force the sidebar width".into(),
+        nfs_remote: None,
+    };
+    let config = LibrarySettings {
+        sources: vec![source],
+        collections: vec![Collection {
+            id: 1,
+            label: "A long synthetic collection name that must not force the sidebar width".into(),
+            members: vec![Location { source: SourceId(1), path: RelativePath::default() }],
+        }],
+        ..Default::default()
+    };
+    browser.configure(config, fixture.path().join("library.json")).unwrap();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1180.0, 760.0))
+        .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    let initial = h.get_by_label("NAME").rect().left();
+    assert!(initial < 280.0, "Navigation labels forced an oversized sidebar: {initial}");
+    let start = egui::pos2(initial - 22.0, 300.0);
+    h.hover_at(start);
+    h.run_steps(2);
+    h.drag_at(start);
+    h.run_steps(2);
+    for distance in [4.0, 8.0, 12.0, 24.0, 40.0, 24.0, 8.0, 0.0, -8.0, -16.0, 0.0] {
+        h.hover_at(start + egui::vec2(distance, 0.0));
+        h.run_steps(3);
+        let actual = h.get_by_label("NAME").rect().left();
+        assert!((actual - (initial + distance)).abs() < 2.0, "initial {initial}, distance {distance}, actual {actual}");
+    }
+    h.drop_at(start);
+    h.run_steps(5);
+    assert!((h.get_by_label("NAME").rect().left() - initial).abs() < 2.0);
+}
