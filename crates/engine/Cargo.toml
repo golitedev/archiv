@@ -1,6 +1,6 @@
 [package]
 name = "archiv-engine"
-description = "Headless application use cases and job orchestration. No use cases are implemented."
+description = "Cancellable headless directory browsing."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,6 @@ workspace = true
 [dependencies]
 archiv-core.workspace = true
 archiv-platform.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,7 +1,8 @@
 # archiv-platform
 
-Filesystem and external-process boundaries. No adapters or operations are implemented.
+Read-only Linux directory adapter. Uses root directory descriptors, openat2 BENEATH/NO_SYMLINKS
+and descriptor-backed enumeration. Emits up to 128 entries per batch and 50,000 per listing;
+links are listed without traversal. There is no file mutation API.
 
-This crate reserves a layer boundary, not a public API contract. Read the workspace
-[architecture](../../docs/architecture.md), [safety design](../../docs/safety.md) and
-[project instructions](../../AGENTS.md) before adding behavior.
+Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
+[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.

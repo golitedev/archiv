@@ -1,6 +1,6 @@
 # Architecture
 
-Status: design baseline, not an implemented system. Updated: 2026-10-31.
+Status: read-only physical browsing implemented; other sections describe future work. Updated: 2026-10-31.
 
 ## Goal and boundaries
 
@@ -22,10 +22,11 @@ Do not couple the domain model to `/mnt/diskN`, a username, one SSH alias or a s
 | `archiv-ui-egui` | egui views, tokens/widgets, command dispatch, input/accessibility, presentation state | core, engine |
 | `archiv` (`apps/archiv`) | native entry point, configuration/runtime startup and dependency wiring | engine, platform, ui-egui |
 
-The current libraries contain documentation only. The executable only prints a scaffold notice.
-The manifests reserve these dependencies; there are no third-party dependencies yet. Enforce the
-layer direction during reviews now; add automated architecture checks when enough code exists.
-Public engine actions should be usable by tests and future CLI adapters without egui.
+Core models, the Linux directory reader, the bounded browsing engine and the native shell now
+exist. The executable supports a GUI and `--list` through the same engine. The UI uses upstream
+egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. No mutation,
+merged-view implementation, index or transport adapter is present. Enforce dependency direction
+in reviews; no automated layer checker exists yet.
 
 ## Identity and visual merging
 
@@ -80,14 +81,14 @@ in them. User-specific state follows XDG directories and stays out of Git.
 
 ## Desktop integration
 
-Plan for upstream egui/eframe with Wayland, X11, clipboard and AccessKit. Keep the UI crate independent
+The native shell uses upstream egui/eframe with Wayland, X11, clipboard and AccessKit. Keep the UI crate independent
 of a running network or GPU in domain tests. Launch external mpv and rsync with `Command` argument
 arrays, never shell command strings. rsync SSH routing and destinations must be validated separately
 from NFS mounts. Transfers over SSH bypass any Samba recycle policy.
 
 ## Deliberately deferred
 
-GUI code, toolkit version selection, shared widget implementation, config parsing, indexing implementation,
-mutation syscalls, SSH authentication code, packaging, CI services and a NAS agent. The design is
+Merged collection behavior, config parsing, indexing, mutation, SSH transfers/authentication,
+packaging, CI services and a NAS agent. The design is
 small enough to revise as the first read-only slice supplies evidence; do not add a plugin framework
 or separate service for every crate.

@@ -1,12 +1,12 @@
 # Initial decisions
 
-Status: preparation baseline. Updated: 2026-10-31.
+Status: initial decisions with the M1 implementation update. Updated: 2026-10-31.
 
 ## 001 — native Rust Linux desktop
 
 Use Rust with egui/eframe. Linux/Arch first, Wayland and X11. No web frontend or PDF engine.
 Rationale: the owner wants a standalone pure Rust app with a consistent native desktop interface.
-Toolkit dependencies and exact versions will be selected when UI implementation starts.
+M1 selects upstream egui/eframe 0.37 (Rust 1.95 minimum), using Glow/OpenGL, Wayland and X11.
 
 ## 002 — logical aggregation only
 
@@ -19,7 +19,7 @@ on-disk renaming. Duplicate files remain distinct until the user explicitly choo
 Browse/play using normal mounted NFS paths. Prefer rsync over SSH for queued many-file transfers;
 local enumeration on the remote peer can avoid repeated client filesystem round trips. Measure,
 do not promise a universal speed advantage or hardcode tuning copied from unrelated hardware.
-No NFS/SSH configuration is created by the app scaffold. An SSH alias working on this server does
+No NFS/SSH configuration is created by Archiv. An SSH alias working on this server does
 not establish that the same alias works on the owner's Arch PC.
 
 ## 004 — engine policy plus explicit enforcement boundaries
@@ -37,6 +37,6 @@ not just styling. Project documentation must remain self-contained.
 
 ## 006 — minimal preparation
 
-This commit provides documentation, lint configuration, a lockfile and empty layer placeholders.
-No feature implementation, third-party dependency resolution, GUI, assets, test framework or CI
-service is required yet. Add behavior and necessary tests in small slices after the owner requests it.
+The initial preparation provided documentation, lint configuration, a lockfile and layer placeholders.
+Implementation proceeds in small, tested slices. The first slice adds read-only browsing and the
+native shell; transfers, merging and mutation are not part of it. No CI service is configured.

@@ -1,6 +1,7 @@
 # Archiv
 
-Read and follow [AGENTS.md](AGENTS.md). It is the single source of project instructions.
+Read and follow [AGENTS.md](AGENTS.md), the single source of project instructions.
 Then read [ROADMAP.md](ROADMAP.md) and the relevant architecture, UI and safety documents.
 
-The current repository is a preparation scaffold; implementation has not begun.
+Current milestone: M1, native shell and read-only local browsing. See docs/validation.md for
+implemented checks and limitations. Transfer, merged libraries and mutation are future work.

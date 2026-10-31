@@ -1,6 +1,6 @@
 # Deletion, recovery and permission design
 
-Status: requirements only; no safety mechanism is implemented. Updated: 2026-10-31.
+Status: mutation/recovery requirements only. Read-only path validation exists; no mutation API exists. Updated: 2026-10-31.
 
 ## Enforcement scope
 
@@ -11,7 +11,7 @@ Archiv is not a read-only NFS export. Display these distinctions honestly.
 
 Global enforcement would need read-only exports/filesystem permissions plus a restricted NAS
 helper, a protocol-specific mechanism, or a different storage layer. Snapshots/backups are separate
-recovery systems. This scaffold configures none of them. Never promise that an app-only rule protects
+recovery systems. Archiv configures none of them. Never promise that an app-only rule protects
 against arbitrary NAS commands or a compromised unrestricted account.
 
 ## Planned policy model
@@ -90,4 +90,4 @@ Before enabling writes: synthetic tests of denied structural roots, merged-targe
 ancestor/child selections, path escapes, symlink swaps, stale identities, missing mounts,
 non-UTF-8 paths, full disk, read-only exports, name collisions, disconnected NFS, partial transfer,
 journal interruption and restore conflicts. Use injected failures and temporary filesystems;
-never use the real NAS library as a test fixture. No mutation API exists at the scaffold stage.
+never use the real NAS library as a test fixture. No mutation API exists in the current read-only implementation.

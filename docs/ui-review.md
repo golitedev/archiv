@@ -1,6 +1,6 @@
 # Native UI acceptance checklist
 
-Status: requirements for later implementation; no GUI or UI test harness exists yet.
+Status: acceptance requirements; initial native/UI-test evidence is recorded in validation.md.
 Updated: 2026-10-31.
 
 Use this checklist when implementing a UI slice. Run against synthetic local sources first; use
@@ -52,5 +52,5 @@ and what remains unverified. Inapplicable cases may be explained, not silently m
 Use native screenshots for appearance, interaction/accessibility tests for inputs and roles, and
 engine tests for data behavior. Add failure regressions that demonstrably fail without the fix.
 Keep captures out of Git unless they are approved, synthetic and useful as maintained baselines.
-Do not add implementation, snapshot files or test dependencies just to complete this checklist
-while Archiv remains in preparation. Future tooling must be real and documented before claiming it.
+Complete relevant checks for each implementation slice without marking unrelated future cases
+as passed. Tooling must be real and documented before claiming it.

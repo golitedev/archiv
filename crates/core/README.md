@@ -1,7 +1,7 @@
 # archiv-core
 
-Domain identities, logical library views and deterministic policy rules. No IO or UI is implemented.
+Byte-preserving physical source/entry identities, validated relative paths, file-kind metadata,
+single-line display escaping and deterministic folder-first sorting. No IO or GUI dependencies.
 
-This crate reserves a layer boundary, not a public API contract. Read the workspace
-[architecture](../../docs/architecture.md), [safety design](../../docs/safety.md) and
-[project instructions](../../AGENTS.md) before adding behavior.
+Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
+[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.

@@ -1,6 +1,6 @@
 [package]
 name = "archiv-ui-egui"
-description = "Planned native egui interface. No GUI code or toolkit dependency is present yet."
+description = "Native read-only file browser interface."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,3 +12,12 @@ workspace = true
 [dependencies]
 archiv-core.workspace = true
 archiv-engine.workspace = true
+egui.workspace = true
+eframe.workspace = true
+egui_extras.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+archiv-platform.workspace = true
+egui_kittest.workspace = true
+tempfile.workspace = true

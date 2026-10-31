@@ -10,8 +10,9 @@ These rules define Archiv's engineering, interface and data-safety requirements.
   Rust owns product code and build tooling; no handwritten JS/TS, Electron or webview frontend.
 - Use maintained egui/eframe releases for the UI. Toolkit forks and vendored patches require
   a documented need; do not add them as part of routine scaffolding.
-- Current scope is **documentation and minimal Cargo scaffolding only**. Do not implement app
-  features until requested. Never present planned behavior as shipped. Update ROADMAP honestly.
+- Current milestone is **M1: native shell and read-only local browsing**. Follow the user's
+  requested slice; NAS integration, transfers and mutation remain separate milestones.
+  Never present planned behavior as shipped. Update ROADMAP honestly.
 - Never run development experiments on the user's real NAS library. Use temporary synthetic
   trees. Do not change NAS ownership, permissions, mounts, exports, services or contents unless
   the user has authorized that work. Build fixtures locally; no real deletion tests on mounted data.
@@ -101,7 +102,7 @@ must never become bundled output. Refer to the asset document before adding or p
 - Review arithmetic and path handling, function behavior on malformed input, module responsibilities,
   and whole-project safety assumptions as changes are made.
 - Run fmt, check, Clippy with warnings denied, and relevant tests before committing. Bound build
-  parallelism (normally `-j 2`). This tiny scaffold permits a workspace sweep; grow toward scoped
+  parallelism (normally `-j 2`). The current workspace permits a workspace sweep; grow toward scoped
   checks as the project grows. Do not claim asset/layer/GUI tooling exists until implemented.
 - Tests use synthetic fixtures, not personal files, NAS paths or real SSH credentials. Add meaningful
   tests for merge identity and destructive decisions before enabling mutation, not tests of empty stubs.

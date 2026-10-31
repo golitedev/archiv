@@ -1,6 +1,6 @@
 [package]
 name = "archiv-platform"
-description = "Filesystem and external-process boundaries. No adapters or operations are implemented."
+description = "Read-only Linux filesystem adapter."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,3 +11,7 @@ workspace = true
 
 [dependencies]
 archiv-core.workspace = true
+rustix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

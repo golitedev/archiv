@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: preparation complete; feature implementation has not begun.
+Status: M1 in progress; first native read-only browsing slice implemented.
 Updated: 2026-10-31.
 
 ## M0 — preparation (complete)
@@ -8,14 +8,17 @@ Updated: 2026-10-31.
 - Git repository and minimal compiling Cargo workspace.
 - Archiv UI design specification and asset guidelines.
 - Architecture, safety boundaries, conceptual config and staged implementation plan.
-- No GUI or file operations implemented; empty crates reserve layer boundaries.
+- Preparation established the layer boundaries; runtime implementation is tracked under M1.
 
-## M1 — native shell and read-only local browsing (not started)
+## M1 — native shell and read-only local browsing (in progress)
 
-- Add upstream egui/eframe, native Wayland/X11 support and the documented theme.
+- Implemented: egui/eframe 0.37 shell with theme tokens, physical sources, filtering and details.
+- Implemented: byte-preserving IDs, no-follow directory reads, bounded workers, cancel/refresh,
+  stale-result rejection and headless `--list`; no implicit startup scan.
+- Native X11 appearance and egui interaction evidence are recorded in docs/validation.md.
+- Remaining: target fonts/icons, desktop scale/motion discovery, broader keyboard/native Wayland
+  acceptance and mount identity checks before claiming NAS support.
 - Verify font/icon redistribution rights and evaluate shared widget needs before adding dependencies.
-- Native keyboard-accessible shell with source navigation, list, search and status regions.
-- Typed source/entry IDs, explicit local sources, cancellable bounded worker enumeration.
 - Acceptance: synthetic directory fixtures; no mutation route; long/non-UTF-8 labels; visible errors;
   native screenshot/interaction checks. Cold startup performs no unrequested NAS scan.
 
@@ -57,3 +60,6 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
 - 2026-10-31: made project instructions self-contained and removed external design-reference material.
 - 2026-10-31: completed the design-guidance review; clarified theme/scale/font behavior, exactly-once
   command dispatch, resource limits and native acceptance criteria. Documentation only.
+
+- 2026-10-31: implemented the first read-only native browser slice, headless listing, bounded
+  worker engine and synthetic domain/platform/UI tests. No NAS access or mutation enabled.

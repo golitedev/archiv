@@ -11,8 +11,7 @@ space; avoid decorative cards, large banners and marketing copy. Use Archiv's ow
 
 Use Rust egui/eframe with Wayland/X11, clipboard and AccessKit support. There is no web runtime.
 Build a small shared set of buttons, fields, tabs and navigation controls in the UI crate. Prefer
-maintained toolkit releases; evaluate external components before adopting them. GUI dependencies
-are not installed yet. Centralize appearance tokens and layout metrics rather than duplicating them.
+maintained toolkit releases; evaluate external components before adopting them. The first shell uses egui/eframe 0.37. Target fonts and SVG action icons remain deferred. Centralize appearance tokens and layout metrics rather than duplicating them.
 
 ## Color tokens
 
@@ -174,8 +173,7 @@ windows and repaint only for state/input/animation changes. Bound thumbnail deco
 GPU cache memory and work admitted per frame as visual previews are introduced. Late results carry
 source/view generations; stale results cannot replace newer entries or leak textures. Release
 unused visual resources when views close. A renderer startup/device failure reports an actionable
-error; evaluate a supported fallback rather than assuming every Arch GPU works. Do not implement
-renderer recovery or a custom rendering backend in this documentation-only stage.
+error; evaluate a supported fallback rather than assuming every Arch GPU works. The initial renderer is Glow/OpenGL. No alternate renderer or device-recovery mechanism is implemented.
 
 Before a UI slice is called complete, inspect actual native light/dark output on synthetic data,
 keyboard and focus behavior, scaling, empty/loading/offline/error states, long labels and duplicate

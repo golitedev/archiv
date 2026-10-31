@@ -1,6 +1,6 @@
 [package]
 name = "archiv-core"
-description = "Domain identities, logical library views and deterministic policy rules. No IO or UI is implemented."
+description = "Read-only source, location and entry models."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

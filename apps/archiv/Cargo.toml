@@ -1,6 +1,6 @@
 [package]
 name = "archiv"
-description = "Archiv native Linux file manager (preparation scaffold)"
+description = "Archiv native Linux file manager"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,3 +13,4 @@ workspace = true
 archiv-engine.workspace = true
 archiv-platform.workspace = true
 archiv-ui-egui.workspace = true
+eframe.workspace = true

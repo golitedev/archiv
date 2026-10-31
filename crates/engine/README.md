@@ -1,7 +1,8 @@
 # archiv-engine
 
-Headless application use cases and job orchestration. No use cases are implemented.
+Headless physical-directory browsing with two workers, bounded job/event queues, explicit
+source registration, cancellation, generation-tagged results and within-frame command deduplication.
+No deletion, transfer, merge or index implementation exists.
 
-This crate reserves a layer boundary, not a public API contract. Read the workspace
-[architecture](../../docs/architecture.md), [safety design](../../docs/safety.md) and
-[project instructions](../../AGENTS.md) before adding behavior.
+Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
+[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.

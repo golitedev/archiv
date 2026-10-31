@@ -1,12 +1,13 @@
 # Visual resources and code reuse
 
-Status: project guidelines; no visual assets are bundled. Updated: 2026-10-31.
+Status: default toolkit fonts are dependency-bundled; no font binaries are committed. Updated: 2026-10-31.
 
 ## Resource selection
 
 Archiv uses a compact desktop interface with Inter for ordinary UI text, JetBrains Mono for
-selected technical details, and Lucide SVG icons. These are design choices; no font or icon files
-have been added yet. Use original artwork for Archiv branding.
+selected technical details, and Lucide SVG icons as its target design. The initial shell uses
+toolkit fallback fonts and text actions; see [resource records](third-party-assets.md). No custom
+font or SVG asset is added yet. Use original artwork for Archiv branding.
 
 Before adding a resource, verify that its terms permit the intended use and distribution. Obtain
 files from an identifiable original release and pin the version. Avoid extracted system fonts,
@@ -30,7 +31,7 @@ it. Published captures must use verified reusable assets, including any fonts vi
 When a future dependency or asset requires a notice, include it alongside that material and
 record its version, original source URL, author, intended use and applicable terms.
 Track file integrity for downloaded/build-input binaries and retain the required license text. Keep this bookkeeping proportional to the resources
-actually present; no standalone asset registry or validation command exists in this scaffold.
+actually present; no standalone asset registry or validation command exists yet.
 
 Review dependencies for maintained safe APIs, compatible terms, build cost and Linux support.
 Use external mpv, rsync and OpenSSH as integrations; do not copy their implementation into Archiv.

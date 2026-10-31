@@ -1,4 +1,6 @@
 # archiv executable
 
-Preparation entry point only. It prints a scaffold notice and exits without accessing files or NAS
-services. Native eframe startup and runtime wiring will be added in the first implementation slice.
+Linux native GUI entry point and read-only headless listing. `--help` describes supported arguments.
+Use `--browse PATH` to explicitly select a source, or `--list PATH` without a display server.
+The GUI wires the local reader to the engine and a repaint callback. No NAS or mount configuration,
+mutation, transfer or media-player operation is available yet. See the workspace README.
