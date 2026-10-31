@@ -9,21 +9,25 @@ pub fn pill(ui: &mut egui::Ui, text: &str, primary: bool, t: &Tokens) -> Respons
         .fill(Color32::TRANSPARENT)
         .stroke(egui::Stroke::NONE);
     let response = ui.add(button);
-    let fill = if primary {
-        if response.is_pointer_button_down_on() {
-            t.accent.gamma_multiply(0.88)
-        } else if response.hovered() {
-            t.accent.gamma_multiply(1.08)
-        } else {
-            t.accent
-        }
-    } else if response.is_pointer_button_down_on() {
-        t.pressed
-    } else if response.hovered() {
-        t.hover
+    let duration = ui.style().animation_time;
+    let hover = ui.ctx().animate_bool_with_time_and_easing(
+        response.id.with("pill-hover"),
+        response.hovered(),
+        duration,
+        egui::emath::easing::quadratic_out,
+    );
+    let down = ui.ctx().animate_bool_with_time_and_easing(
+        response.id.with("pill-press"),
+        response.is_pointer_button_down_on(),
+        duration * 0.5,
+        egui::emath::easing::quadratic_out,
+    );
+    let (rest, hot, pressed) = if primary {
+        (t.accent, t.accent.gamma_multiply(1.08), t.accent.gamma_multiply(0.88))
     } else {
-        t.card
+        (t.card, t.hover, t.pressed)
     };
+    let fill = rest.lerp_to_gamma(hot, hover).lerp_to_gamma(pressed, down);
     let fill = if ui.is_enabled() { fill } else { fill.gamma_multiply(0.5) };
     ui.painter().set(background, egui::Shape::rect_filled(response.rect, 14, fill));
     if !primary {

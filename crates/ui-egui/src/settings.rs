@@ -98,27 +98,10 @@ impl Editor {
         egui::ScrollArea::vertical().id_salt("preferences-body").max_height((ui.ctx().content_rect().height()-250.0).clamp(120.0,520.0)).show(ui,|ui|{
             ui.set_min_height(300.0);
             if self.page==Page::Appearance {
-                ui.heading("Appearance");ui.label("Choose how Archiv looks on your desktop.");
-                egui::ComboBox::from_id_salt("preferences-theme").selected_text(preferences.theme.label()).show_ui(ui,|ui|{for theme in [ThemePreference::System,ThemePreference::Light,ThemePreference::Dark]{ui.selectable_value(&mut preferences.theme,theme,theme.label());}}).response.accessible_name("Appearance mode");
-                ui.add_space(12.0);let preview_width=((ui.available_width()-64.0)/2.0).clamp(80.0,235.0);ui.horizontal(|ui|{for theme in [ThemePreference::Light,ThemePreference::Dark]{
-                    let selected=preferences.theme==theme;let preview=Tokens::new(theme==ThemePreference::Dark);
-                    egui::Frame::new().fill(preview.workspace).stroke(egui::Stroke::new(if selected{1.5}else{1.0},if selected{t.accent}else{t.border})).corner_radius(8).inner_margin(14).show(ui,|ui|{
-                        ui.vertical(|ui| {
-                            ui.set_width(preview_width);
-                            ui.colored_label(preview.text,format!("{} theme",theme.label()));
-                            let (rect,_) = ui.allocate_exact_size(egui::vec2(preview_width,72.0),egui::Sense::hover());
-                            ui.painter().rect_filled(rect,4,preview.panel);
-                            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min+egui::vec2(8.0,12.0),egui::vec2(42.0,52.0)),3,preview.selected);
-                            for index in 0..3 {ui.painter().rect_filled(egui::Rect::from_min_size(rect.min+egui::vec2(64.0,16.0+(index as f32)*15.0),egui::vec2((preview_width-80.0).max(0.0),3.0)),1,preview.muted);}
-                            if ui.selectable_label(selected,egui::RichText::new(format!("Use {}",theme.label())).color(preview.text)).clicked(){preferences.theme=theme;}
-                        });
-                    });
-                }});
-                ui.add_space(14.0);ui.label("Interface size");egui::ComboBox::from_id_salt("interface-scale").selected_text(preferences.scale.map_or_else(||"Auto".into(),|s|format!("{s}%"))).show_ui(ui,|ui|{ui.selectable_value(&mut preferences.scale,None,"Auto");for scale in [75,100,125,150,200]{ui.selectable_value(&mut preferences.scale,Some(scale),format!("{scale}%"));}});
-                ui.small("Auto follows display scaling. Manual percentages multiply the native desktop scale.");ui.checkbox(&mut preferences.reduced_motion,"Reduce motion");
+                appearance(ui,preferences,t);
             }else{ui.add_enabled_ui(!pending,|ui|match self.page{
                 Page::Sources=>{
-                    ui.heading("Physical sources");ui.label("Saved definitions never scan automatically at startup.");ui.small("For NFS, mount the share in Linux, then enter the local mount point and exact server:/export shown by findmnt. SSH aliases are separate.");
+                    section(ui,"Physical sources");ui.label("Saved definitions never scan automatically at startup.");ui.small("For NFS, mount the share in Linux, then enter the local mount point and exact server:/export shown by findmnt. SSH aliases are separate.");
                     let mut remove=None;
                     for source in &mut self.draft.sources{ui.push_id(source.id,|ui|{
                         ui.add_space(10.0);ui.separator();field(ui,"Source name",&mut source.label,128);
@@ -131,7 +114,7 @@ impl Editor {
                     if self.draft.sources.len()<32&&ui.button("Add source").clicked(){let id=self.draft.sources.iter().map(|s|s.id.0).max().unwrap_or(0).saturating_add(1);self.draft.sources.push(Source{id:SourceId(id),label:format!("Source {id}"),root:PathBuf::new(),nfs_remote:None});}
                 }
                 Page::Collections=>{
-                    ui.heading("Optional collections");ui.label("Combine selected folders visually. Nothing is merged or renamed on disk.");let mut remove=None;
+                    section(ui,"Optional collections");ui.label("Combine selected folders visually. Nothing is merged or renamed on disk.");let mut remove=None;
                     for collection in &mut self.draft.collections{ui.push_id(collection.id,|ui|{
                         ui.separator();field(ui,"Collection name",&mut collection.label,128);
                         let members=self.members.entry(collection.id).or_default();
@@ -157,11 +140,11 @@ impl Editor {
                     if self.draft.collections.len()<16&&ui.button("Add collection").clicked(){let id=self.draft.collections.iter().map(|c|c.id).max().unwrap_or(0).saturating_add(1);self.members.insert(id,Vec::new());self.draft.collections.push(Collection{id,label:"Collection".into(),members:Vec::new()});}
                 }
                 Page::Applications=>{
-                    ui.heading("Open files with");ui.label("Enter an executable name or absolute path, not a shell command.");ui.small("Archiv supplies -- and the exact physical filename as separate arguments. Applications use your normal user permissions.");
+                    section(ui,"Open files with");ui.label("Enter an executable name or absolute path, not a shell command.");ui.small("Archiv supplies -- and the exact physical filename as separate arguments. Applications use your normal user permissions.");
                     field(ui,"Image viewer",&mut self.draft.openers.images,4096);ui.small("For example: imv");field(ui,"Media player",&mut self.draft.openers.media,4096);ui.small("For example: mpv");field(ui,"Text editor",&mut self.draft.openers.text,4096);ui.small("For example: kwrite");field(ui,"Other files",&mut self.draft.openers.other,4096);ui.small("Leave empty to require an explicit application configuration.");
                 }
                 Page::Safeguards=>{
-                    ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));ui.heading("Recovery and protected folders");});ui.label("Recovery is disabled until explicitly configured for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots, collection roots and recovery storage are always protected. No permanent delete is provided.");
+                    ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));section(ui,"Recovery and protected folders");});ui.label("Recovery is disabled until explicitly configured for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots, collection roots and recovery storage are always protected. No permanent delete is provided.");
                     for source in &self.draft.sources{ui.push_id(source.id,|ui|{
                         ui.separator();ui.strong(&source.label);ui.label(source.root.to_string_lossy());
                         let mut enabled=self.draft.recovery.iter().any(|p|p.source==source.id&&p.enabled);
@@ -234,13 +217,163 @@ fn parse_lines(text: &str, root: bool) -> Result<Vec<RelativePath>, String> {
 }
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, limit: usize) -> bool {
     ui.label(format!("{label}:"));
-    ui.add(egui::TextEdit::singleline(value).char_limit(limit).desired_width(f32::INFINITY))
+    ui.scope(|ui| {
+        let visuals = &mut ui.style_mut().visuals;
+        for widget in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
+            widget.corner_radius = egui::CornerRadius::same(4);
+        }
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .char_limit(limit)
+                .desired_width(f32::INFINITY)
+                .margin(egui::Margin::symmetric(10, 7)),
+        )
         .accessible_name(label)
         .changed()
+    })
+    .inner
 }
+
 fn multiline(ui: &mut egui::Ui, label: &str, value: &mut String) {
     ui.add(egui::TextEdit::multiline(value).desired_rows(2).char_limit(16384).desired_width(f32::INFINITY))
         .accessible_name(label);
+}
+
+fn section(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).font(crate::fonts::semibold(13.0)));
+}
+fn appearance(ui: &mut egui::Ui, preferences: &mut Preferences, t: &Tokens) {
+    section(ui, "Appearance");
+    ui.horizontal(|ui| {
+        ui.label("Appearance mode");
+        egui::ComboBox::from_id_salt("preferences-theme")
+            .selected_text(preferences.theme.label())
+            .show_ui(ui, |ui| {
+                for theme in [ThemePreference::System, ThemePreference::Light, ThemePreference::Dark] {
+                    ui.selectable_value(&mut preferences.theme, theme, theme.label());
+                }
+            })
+            .response
+            .accessible_name("Appearance mode");
+    });
+    ui.add_space(6.0);
+    let width = ((ui.available_width() - 28.0) / 2.0).max(100.0);
+    ui.horizontal(|ui| {
+        for theme in [ThemePreference::Light, ThemePreference::Dark] {
+            let active = preferences.theme.dark(ui.ctx().system_theme()) == (theme == ThemePreference::Dark);
+            let preview = Tokens::new(theme == ThemePreference::Dark);
+            let card = egui::Frame::new()
+                .fill(t.card)
+                .stroke(egui::Stroke::new(1.0, if active { t.accent } else { t.border }))
+                .corner_radius(6)
+                .inner_margin(8)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} theme", theme.label()))
+                                    .font(crate::fonts::semibold(12.5)),
+                            );
+                            if active {
+                                ui.label(egui::RichText::new("Active").small().color(t.accent_text));
+                            }
+                        });
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 100.0), egui::Sense::hover());
+                        let painter = ui.painter_at(rect);
+                        painter.rect_filled(rect, 3, preview.workspace);
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(rect.min, egui::vec2(width, 12.0)),
+                            0,
+                            preview.titlebar,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 12.0), egui::vec2(width, 10.0)),
+                            0,
+                            preview.panel,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 23.0), egui::vec2(width * 0.19, 77.0)),
+                            0,
+                            preview.panel,
+                        );
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                rect.min + egui::vec2(width * 0.82, 23.0),
+                                egui::vec2(width * 0.18, 77.0),
+                            ),
+                            0,
+                            preview.panel,
+                        );
+                        for row in 0..4 {
+                            let y = 32.0 + (row as f32) * 16.0;
+                            if row == 1 {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(
+                                        rect.min + egui::vec2(width * 0.23, y - 3.0),
+                                        egui::vec2(width * 0.55, 12.0),
+                                    ),
+                                    3,
+                                    preview.selected,
+                                );
+                            }
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(rect.min + egui::vec2(width * 0.25, y), egui::vec2(6.0, 5.0)),
+                                1,
+                                if row < 2 { preview.folder } else { preview.document },
+                            );
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    rect.min + egui::vec2(width * 0.31, y + 1.0),
+                                    egui::vec2(width * 0.35, 2.0),
+                                ),
+                                1,
+                                preview.muted,
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(if active { "Selected" } else { "Click to select" })
+                                .small()
+                                .color(t.muted),
+                        );
+                    });
+                });
+            let response = card.response.interact(egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::Role::Button,
+                    ui.is_enabled(),
+                    format!("Choose {} theme", theme.label()),
+                )
+            });
+            if response.has_focus() {
+                ui.painter().rect_stroke(
+                    response.rect.expand(2.0),
+                    8,
+                    egui::Stroke::new(1.5, t.accent),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if response.clicked() {
+                preferences.theme = theme;
+                ui.ctx().request_repaint();
+            }
+        }
+    });
+    ui.add_space(12.0);
+    ui.horizontal(|ui| {
+        ui.label("Interface size");
+        egui::ComboBox::from_id_salt("interface-scale")
+            .selected_text(preferences.scale.map_or_else(|| "Auto".into(), |s| format!("{s}%")))
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut preferences.scale, None, "Auto");
+                for scale in [75, 100, 125, 150, 200] {
+                    ui.selectable_value(&mut preferences.scale, Some(scale), format!("{scale}%"));
+                }
+            });
+    });
+    ui.small("Auto follows display scaling. Manual percentages multiply the native desktop scale.");
+    ui.checkbox(&mut preferences.reduced_motion, "Reduce motion");
 }
 
 #[cfg(test)]

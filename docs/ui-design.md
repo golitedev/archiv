@@ -12,7 +12,7 @@ avoid decorative banners and marketing filler. Use Archiv's own identity.
 
 Use Rust egui/eframe with Wayland/X11, clipboard and AccessKit support. There is no web runtime.
 Build a small shared set of buttons, fields, tabs and navigation controls in the UI crate. Prefer
-maintained toolkit releases; evaluate external components before adopting them. The first shell uses egui/eframe 0.37. Target fonts remain deferred; attributed Lucide SVGs are used for folders and file types. Centralize appearance tokens and layout metrics rather than duplicating them.
+maintained toolkit releases; evaluate external components before adopting them. The first shell uses egui/eframe 0.37. Verified Inter/JetBrains Mono build inputs are documented in fonts.md; attributed Lucide SVGs are used for folders and file types. Centralize appearance tokens and layout metrics rather than duplicating them.
 
 ## Color tokens
 
@@ -62,7 +62,7 @@ Do not make selection, warning, permission or availability distinguishable by co
 
 - UI face: Inter Regular, Medium and SemiBold. Monospace: JetBrains Mono for paths/details when
   appropriate, not every filename. Open assets only; no committed font binaries. See assets.md.
-  A temporary egui default-font shell must be documented as visually incomplete, not a match.
+  A build without the verified inputs uses toolkit fallback typography and must be described as a fallback, not a full reference match.
 - Baseline sizes in logical points: body/buttons 13, secondary/small 11, headings 17 semibold.
   Respect system/user text scaling, HiDPI and font fallback; do not impose a minimum physical pixel size.
 - Item spacing: horizontal 8, vertical 6. Button padding: horizontal 10, vertical 5.

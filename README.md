@@ -33,6 +33,7 @@ Wayland/X11 session and OpenGL. Run the GUI on your graphical PC, not an unrelat
 paths refer to the machine running Archiv. Headless listing/search needs no display.
 
 ```sh
+cargo run -p archiv-fonts --locked # once: fetch and verify open font build inputs
 cargo run -p archiv --locked
 cargo run -p archiv --locked -- --browse "$HOME/Videos" --theme dark
 cargo run -p archiv --locked -- --list /absolute/folder
@@ -68,8 +69,10 @@ limits](docs/file-actions.md) before enabling it on writable sources. No rename/
 transfer, purge or permission editor exists. Actual writable NFS recovery/disconnect testing has
 not been performed on the user's NAS; tests use synthetic local fixtures and injected failures.
 
-The interface uses egui fallback fonts; Inter/JetBrains Mono, full desktop font/motion discovery,
-complete Wayland/accessibility and mixed-DPI acceptance remain unfinished. Manual UI scaling and
+Inter Regular/Medium/SemiBold and JetBrains Mono use [verified external build inputs](docs/fonts.md).
+Run the font preparation command above before rebuilding; builds without inputs use toolkit
+fallback fonts. Full desktop font/motion discovery, complete Wayland/accessibility and mixed-DPI
+acceptance remain unfinished. Manual UI scaling and
 reduced animation are available. Icons are pinned Lucide SVGs; [provenance/licenses](assets/icons/README.md).
 No toolkit fork, copied PdfCraft branding, telemetry, network control listener or runtime font download.
 
@@ -84,7 +87,7 @@ cargo test --workspace --locked -j 2
 
 [Instructions](AGENTS.md), [development](docs/development.md), [architecture](docs/architecture.md),
 [safety](docs/safety.md), [UI design](docs/ui-design.md), [UI acceptance](docs/ui-review.md),
-[assets](docs/assets.md), [font notices](docs/third-party-assets.md).
+[assets](docs/assets.md), [font notices](docs/third-party-assets.md), [request audit](docs/request-audit.md).
 
 Code/documentation: [0BSD](LICENSE). Dependencies and assets retain their own terms. Tests/captures
 use synthetic data. `artifacts/` is ignored; personal paths/configs and NAS inventories stay out of Git.

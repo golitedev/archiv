@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["apps/archiv", "crates/core", "crates/platform", "crates/engine", "crates/ui-egui"]
+members = ["apps/archiv", "crates/core", "crates/platform", "crates/engine", "crates/ui-egui", "tools/fonts"]
 default-members = ["apps/archiv"]
 
 [workspace.package]
@@ -21,6 +21,7 @@ serde = { version = "1", features = ["derive"] }
 rustix = { version = "1", features = ["fs"] }
 tempfile = "3"
 serde_json = "1"
+sha2 = "0.10"
 egui_kittest = { version = "0.37", default-features = false, features = ["eframe"] }
 
 [workspace.lints.rust]

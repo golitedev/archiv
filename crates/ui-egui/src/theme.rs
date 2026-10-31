@@ -34,6 +34,8 @@ impl ThemePreference {
 }
 
 pub struct Tokens {
+    pub titlebar: Color32,
+    pub accent_text: Color32,
     pub panel: Color32,
     pub workspace: Color32,
     pub card: Color32,
@@ -55,6 +57,8 @@ impl Tokens {
         let rgb = Color32::from_rgb;
         if dark {
             Self {
+                titlebar: rgb(27, 27, 30),
+                accent_text: rgb(140, 182, 250),
                 panel: rgb(38, 38, 42),
                 workspace: rgb(25, 25, 28),
                 card: rgb(46, 46, 51),
@@ -63,7 +67,7 @@ impl Tokens {
                 muted: rgb(174, 174, 182),
                 hover: rgb(52, 52, 58),
                 pressed: rgb(62, 62, 69),
-                selected: rgb(36, 54, 87),
+                selected: rgb(35, 58, 99),
                 accent: rgb(75, 139, 245),
                 field: rgb(30, 30, 34),
                 folder: rgb(75, 139, 245),
@@ -73,6 +77,8 @@ impl Tokens {
             }
         } else {
             Self {
+                titlebar: rgb(233, 233, 235),
+                accent_text: rgb(23, 85, 196),
                 panel: Color32::WHITE,
                 workspace: rgb(241, 241, 243),
                 card: Color32::WHITE,
@@ -81,7 +87,7 @@ impl Tokens {
                 muted: rgb(94, 94, 102),
                 hover: rgb(240, 240, 243),
                 pressed: rgb(228, 228, 233),
-                selected: rgb(227, 236, 253),
+                selected: rgb(230, 238, 253),
                 accent: rgb(27, 99, 224),
                 field: Color32::WHITE,
                 folder: rgb(27, 99, 224),
@@ -94,6 +100,15 @@ impl Tokens {
 }
 
 pub fn apply(ctx: &egui::Context, preference: ThemePreference, reduced_motion: bool) -> Tokens {
+    let chrome_key = egui::Id::unique("archiv-native-theme");
+    if ctx.data(|data| data.get_temp::<ThemePreference>(chrome_key)) != Some(preference) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(match preference {
+            ThemePreference::System => egui::SystemTheme::SystemDefault,
+            ThemePreference::Light => egui::SystemTheme::Light,
+            ThemePreference::Dark => egui::SystemTheme::Dark,
+        }));
+        ctx.data_mut(|data| data.insert_temp(chrome_key, preference));
+    }
     let dark = preference.dark(ctx.system_theme());
     let t = Tokens::new(dark);
     let mut visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
@@ -135,6 +150,7 @@ pub fn apply(ctx: &egui::Context, preference: ThemePreference, reduced_motion: b
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, t.border);
     visuals.widgets.hovered.bg_fill = t.hover;
     visuals.widgets.hovered.weak_bg_fill = t.hover;
+    visuals.widgets.active.bg_stroke = Stroke::new(1.5, t.accent);
     visuals.widgets.active.bg_fill = t.pressed;
     visuals.widgets.active.weak_bg_fill = t.pressed;
     // Keep framework theme branches synchronized for popups while retaining system notifications.
@@ -150,9 +166,10 @@ pub fn apply(ctx: &egui::Context, preference: ThemePreference, reduced_motion: b
             style.spacing.scroll.floating = true;
             style.spacing.scroll.floating_width = 3.0;
             style.text_styles.insert(egui::TextStyle::Body, FontId::proportional(13.0));
-            style.text_styles.insert(egui::TextStyle::Button, FontId::proportional(13.0));
+            style.text_styles.insert(egui::TextStyle::Button, crate::fonts::medium(13.0));
+            style.text_styles.insert(egui::TextStyle::Monospace, FontId::monospace(12.0));
             style.text_styles.insert(egui::TextStyle::Small, FontId::proportional(11.0));
-            style.text_styles.insert(egui::TextStyle::Heading, FontId::proportional(17.0));
+            style.text_styles.insert(egui::TextStyle::Heading, crate::fonts::semibold(17.0));
             style.interaction.tooltip_delay = 0.35;
             style.animation_time = if reduced_motion { 0.0 } else { 0.12 };
         });

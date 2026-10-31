@@ -16,7 +16,9 @@ Updated: 2026-10-31.
 - Implemented: byte-preserving IDs, no-follow directory reads, bounded workers, cancel/refresh,
   stale-result rejection and headless `--list`; no implicit startup scan.
 - Native X11 appearance and egui interaction evidence are recorded in docs/validation.md.
-- Remaining: target fonts, desktop text-scale/motion discovery, broader keyboard/native Wayland
+- Implemented: verified Inter/JetBrains Mono build inputs, explicit acquisition/check tooling and
+  documented offline fallback; no font binaries in Git or runtime downloads.
+- Remaining: desktop text-scale/motion discovery, broader keyboard/native Wayland
   acceptance. Configured NFS mount checks are implemented in the first M2 slice.
 - Verify font/icon redistribution rights and evaluate shared widget needs before adding dependencies.
 - Acceptance: synthetic directory fixtures; opt-in recovery is tracked under M4; long/non-UTF-8 labels; visible errors;
@@ -81,3 +83,7 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
   categorized Preferences; added attributed tinted Lucide icons, compact inline expansion, explicit
   recursive search, configurable applications and opt-in journaled recovery with protected paths.
   NAS inspection remained read-only; client-specific NFS setup needs PC connection information.
+
+- 2026-10-31: re-audited the requested features against PdfCraft; corrected typography, exact
+  selection tokens, resolved-System theme cards, field/focus styling and appearance cancellation.
+  Client-specific NFS deployment remains pending; see docs/request-audit.md.

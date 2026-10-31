@@ -41,7 +41,8 @@ sources for dialog/filter/select/navigation, keyboard cancellation and shared th
 Native appearance checks complement these tests; see [validation](validation.md). No custom control
 server, CLI automation protocol or screenshot endpoint exists.
 
-The UI uses toolkit fonts plus attributed Lucide SVGs and text menus. Future font work follows
+The UI uses verified Inter/JetBrains Mono build inputs (docs/fonts.md), with toolkit fallback,
+attributed Lucide SVGs and text menus. Additional font work follows
 [asset guidelines](assets.md). Do not add product dependencies or a global task framework merely
 to replace the small worker and command abstractions. No CI/push/publication workflow is configured.
 

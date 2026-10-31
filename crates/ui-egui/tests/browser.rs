@@ -313,3 +313,59 @@ fn manual_scaling_keeps_menus_and_folder_dialog_accessible() {
         assert!(h.query_by_label("Folder path").is_none());
     }
 }
+
+#[test]
+fn whole_theme_cards_select_a_theme_and_cancel_restores_appearance() {
+    let mut h = harness().unwrap();
+    h.get_by_label("Preferences").click();
+    h.run_steps(20);
+    h.get_by_label("Choose Dark theme").click();
+    h.run_steps(5);
+    assert!(h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
+    h.get_by_label("Cancel").click_accesskit();
+    h.run_steps(5);
+    assert!(!h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
+    h.get_by_label("Preferences").click();
+    h.run_steps(20);
+    h.get_by_label("Choose Dark theme").click_accesskit();
+    h.run_steps(5);
+    assert!(h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(5);
+    assert!(!h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
+}
+
+#[test]
+fn failed_apply_does_not_commit_appearance_cancel_baseline() {
+    for fail in [false, true] {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = if fail {
+            std::fs::write(fixture.path().join("not-a-directory"), b"occupied").unwrap();
+            fixture.path().join("not-a-directory/library.json")
+        } else {
+            fixture.path().join("settings/library.json")
+        };
+        let mut browser = Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap();
+        browser.configure(Default::default(), path).unwrap();
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1180.0, 760.0))
+            .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
+        h.get_by_label("Preferences").click();
+        h.run_steps(20);
+        h.get_by_label("Choose Dark theme").click_accesskit();
+        h.run_steps(5);
+        h.get_by_label("Applications").click_accesskit();
+        h.run_steps(10);
+        h.get_by_label("Save library").click_accesskit();
+        h.run_steps(3);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while h.state().browser().settings_pending() && Instant::now() < deadline {
+            h.run_steps(2);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.run_steps(5);
+        h.get_by_label("Cancel").click_accesskit();
+        h.run_steps(5);
+        assert_eq!(h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode, !fail);
+    }
+}

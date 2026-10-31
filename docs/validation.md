@@ -126,3 +126,37 @@ mutation acceptance. A read-only NAS inspection found NFS inactive. Server/clien
 intended PC's LAN address/access; no packages, exports, services, mounts or permissions were changed.
 Native Wayland, hardware GPUs, screen readers, mixed-DPI and native high-scale compositor acceptance
 remain unverified. See file-actions.md for persisted identity, durability and final-rename race limits.
+
+## Reference-style audit and verified typography (2026-10-31)
+
+Re-read the complete user request and compared the actual PdfCraft theme, appearance-card and
+font implementation with Archiv. docs/request-audit.md maps each requested item to implemented
+behavior or an explicit deployment/acceptance limitation. Actual NFS setup is still pending the
+PC address/access; a fresh read-only SSH service check returned inactive. Nothing on the NAS changed.
+
+Corrected the remaining reference typography mismatch: official Inter 4.1 Regular, Medium and
+SemiBold files match the reference's exact SHA-256 values. JetBrains Mono 2.304 is pinned for
+technical paths. The explicit Rust font tool acquires/verifies build inputs; the GUI build script
+verifies and copies their bytes before embedding. No font binaries are committed, and no runtime
+font filesystem/network IO or system-font redistribution was introduced. Complete OFL notices
+are retained and included in About. A fresh-cache acquisition fetched and verified all four faces.
+A deliberately changed face blocks the build, while a missing-cache/offline build passed the
+interaction suite with its documented fallback. The tool's synthetic integrity test also rejects
+changed and oversized data.
+
+The audit corrected exact selected-color tokens, title/card text weights, active field focus,
+shared hover/press timing, native theme command synchronization, whole-card theme selection,
+resolved-System active state and current-theme card surfaces. Cancel/Escape restore appearance;
+only a successful explicit apply advances the cancel baseline. Regression tests cover both
+successful and failed apply before Cancel. Existing file-manager behavior/safety tests still pass.
+
+Native Xvfb/Mesa Light and Dark windows were inspected again with the verified fonts, including
+home panels, menus/search, compact nested file rows and the updated appearance cards/blue actions.
+File paths use the verified monospace face. No HTML mockup or browser frontend was used; captures
+remain ignored artifacts. Native Wayland/hardware/mixed-DPI, screen-reader/IME and writable-NFS
+server failure acceptance remain unclaimed.
+
+Final verification: 42 tests (core 6, engine 11, platform 13, UI unit 1, UI interaction 10, font tool 1),
+workspace/all-target check, Clippy with warnings denied and formatting. The prepared font cache is
+an external ignored build input, documented in docs/fonts.md; PC rebuilds need that preparation
+step to reproduce the Inter appearance.

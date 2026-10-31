@@ -1,4 +1,5 @@
 //! Native configurable file manager. Rendering dispatches typed, deduplicated engine commands.
+mod fonts;
 mod settings;
 mod theme;
 mod widgets;
@@ -33,6 +34,8 @@ pub struct ArchivApp {
     focus_source: bool,
     error: Option<String>,
     settings: Option<settings::Editor>,
+    settings_initial: Option<Preferences>,
+    settings_apply: Option<Preferences>,
     recovery: bool,
     recovery_source: Option<SourceId>,
     restore_choice: Option<(SourceId, String, String)>,
@@ -60,6 +63,8 @@ impl ArchivApp {
             focus_source: false,
             error: None,
             settings: None,
+            settings_initial: None,
+            settings_apply: None,
             recovery: false,
             recovery_source: None,
             restore_choice: None,
@@ -107,8 +112,13 @@ impl ArchivApp {
             Err(error) => {
                 self.error = Some(error.to_string());
                 self.close_after_save = false;
+                self.settings_apply = None;
             }
         }
+    }
+    fn open_preferences(&mut self) {
+        self.settings_initial = Some(self.preferences.clone());
+        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
     }
     fn open_dialog(&mut self) {
         self.add_source = true;
@@ -156,11 +166,20 @@ impl ArchivApp {
     /// Draw only cached state. Commands enter bounded engine workers after rendering.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        fonts::install(&ctx);
         egui_extras::install_image_loaders(&ctx);
         ctx.set_zoom_factor(self.preferences.scale.map_or(1.0, |s| f32::from(s.clamp(75, 200)) / 100.0));
+        if !self.browser.settings_pending()
+            && let Some(applied) = self.settings_apply.take()
+            && self.settings.is_some()
+            && self.browser.settings_status().is_some_and(|s| s.starts_with("Library settings saved"))
+        {
+            self.settings_initial = Some(applied);
+        }
         if self.close_after_save && !self.browser.settings_pending() {
             if self.browser.settings_status().is_some_and(|s| s.starts_with("Library settings saved")) {
                 self.settings = None;
+                self.settings_initial = None;
             }
             self.close_after_save = false;
         }
@@ -249,7 +268,7 @@ impl ArchivApp {
                                 });
                                 ui.menu_button("Edit", |ui| {
                                     if ui.button("Preferences…").clicked() {
-                                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                                        self.open_preferences();
                                         ui.close();
                                     }
                                     let reason = self
@@ -452,7 +471,7 @@ impl ArchivApp {
                         ui.separator();
                         ui.checkbox(&mut self.show_hidden, "Show hidden files");
                         if ui.button("Preferences").clicked() {
-                            self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                            self.open_preferences();
                         }
                         if ui.button("Recovery").clicked() {
                             self.recovery = true;
@@ -489,7 +508,10 @@ impl ArchivApp {
                             for id in ids {
                                 if let Some(source) = self.browser.source(id.source) {
                                     ui.label(&source.label);
-                                    ui.label(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                                    ui.label(
+                                        RichText::new(display_name(source.root.join(id.path.as_path()).as_os_str()))
+                                            .monospace(),
+                                    );
                                     if self.browser.view().collection.is_some()
                                         && !self.browser.view().search
                                         && entry.kind == EntryKind::Directory
@@ -551,12 +573,12 @@ impl ArchivApp {
             }
             self.refresh_rows();
             if self.browser.view().phase == Phase::Idle {
-                ui.heading("Welcome to Archiv");
+                ui.label(RichText::new("Welcome to Archiv").font(fonts::semibold(24.0)));
                 ui.weak("Browse your folders and build the collections you need.");
                 ui.add_space(18.0);
                 widgets::card(&t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.heading("Start browsing");
+                    ui.label(RichText::new("Start browsing").font(fonts::semibold(13.0)));
                     ui.label("Choose a local folder or a mounted network source.");
                     ui.add_space(10.0);
                     if widgets::pill(ui, "Open a folder…", true, &t).clicked() {
@@ -566,11 +588,11 @@ impl ArchivApp {
                 ui.add_space(18.0);
                 widgets::card(&t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.heading("Your workspace");
+                    ui.label(RichText::new("Your workspace").font(fonts::semibold(13.0)));
                     ui.label("Optional collections combine folders visually while preserving every physical location.");
                     ui.add_space(10.0);
                     if widgets::pill(ui, "Configure sources and collections", false, &t).clicked() {
-                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                        self.open_preferences();
                     }
                 });
             } else {
@@ -626,6 +648,7 @@ impl ArchivApp {
                         self.browser.settings_status(),
                         &t,
                     ) {
+                        self.settings_apply = Some(self.preferences.clone());
                         command = Some(save);
                     }
                     if let Some(error) = &self.error {
@@ -651,6 +674,10 @@ impl ArchivApp {
                 });
             if close || response.should_close() {
                 self.settings = None;
+                if let Some(initial) = self.settings_initial.take() {
+                    self.preferences = initial;
+                }
+                ctx.request_repaint();
             }
         }
         if let Some(plan) = self.browser.recovery_preview() {
@@ -784,6 +811,18 @@ impl ArchivApp {
                 ui.heading("Archiv");
                 ui.label("Native Linux file browsing and configurable visual collections.");
                 ui.label("No telemetry. Lucide icons: ISC / MIT. Code: 0BSD.");
+                ui.label(if fonts::INTER_REGULAR.is_some() {
+                    "Typography: Inter 4.1 and JetBrains Mono 2.304"
+                } else {
+                    "Typography: toolkit fallback; verified font build inputs are unavailable"
+                });
+                ui.collapsing("Font licenses", |ui| {
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        ui.label(include_str!("../../../licenses/fonts/OFL-Inter.txt"));
+                        ui.separator();
+                        ui.label(include_str!("../../../licenses/fonts/OFL-JetBrainsMono.txt"));
+                    });
+                });
                 if ui.button("Close").clicked() {
                     self.about = false;
                 }

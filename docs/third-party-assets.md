@@ -1,11 +1,12 @@
-# Initial shell font resources
+# Font resources and notices
 
 Archiv code uses 0BSD. Dependencies and their bundled resources retain their own terms.
 No font binary is committed to this repository or downloaded by Archiv at runtime.
 
-The first UI uses egui's default fonts while Inter/JetBrains Mono build inputs are deferred.
-The renderer therefore follows the documented layout and colors but does not yet match the target
-typography. No Unicode/emoji symbols are used as application action icons. Pinned Lucide SVGs now provide meaningful tinted folder/file-type icons alongside text controls;
+Verified Inter/JetBrains Mono build inputs are supported; see [pins and acquisition](fonts.md).
+The toolkit fonts below remain the fallback when inputs are absent and for uncovered glyphs.
+The renderer therefore follows the documented layout and colors but uses the reference
+typography when the verified build inputs are prepared. No Unicode/emoji symbols are used as application action icons. Pinned Lucide SVGs now provide meaningful tinted folder/file-type icons alongside text controls;
 [icon provenance, hashes and terms](../assets/icons/README.md) are recorded beside the assets. The dependency's private-use icon font is included by its
 normal font configuration, not used for Archiv branding.
 
