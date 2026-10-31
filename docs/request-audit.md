@@ -5,7 +5,9 @@ actual native application using synthetic data. This is implementation evidence,
 that every future roadmap feature or every desktop environment has passed acceptance.
 
 - **Normal text menus:** File/Edit/View/Help, with shared engine commands for file actions.
-  Navigation remains a file-manager toolbar rather than PDF tool modes.
+  Open folder/Recovery live in File, Preferences in Edit, and navigation/hidden-file visibility
+  in View. Only branding, menus and search remain in the top row; location entry is at the bottom.
+  Theme selection is available only in Preferences.
 - **Meaningful colored icons:** licensed, pinned Lucide folder/disclosure/image/video/text icons;
   no PdfCraft branding, decorative tool grid, emoji or copied proprietary assets.
 - **Grey central panels:** rounded neutral Start browsing and Your workspace panels with working
@@ -15,8 +17,9 @@ that every future roadmap feature or every desktop environment has passed accept
 - **Compact nested folders:** 26-point rows, one-click disclosure arrows, double-click/Enter
   navigation and Ctrl+L address navigation. Exact paths retain source identity.
 - **Selection / columns:** rounded selection, exact documented selection tokens, aligned metadata
-  headers; no full-height column dividers or unstable drag handles. Metadata columns remain stable
-  while the name column adapts to available width.
+  headers with short draggable dividers (also keyboard adjustable); no full-height column lines.
+  Adjacent columns share each resize, while later boundaries stay still. Details content fills
+  the requested pane width and wraps; resizing is checked with empty and selected content.
 - **Configurable collections:** arbitrary names and member paths; multiple folders per source are
   supported. Nothing is automatically merged on disk or included by default. Files with the same
   name retain distinct physical rows and locations. No built-in Movies/TV/Anime categories.

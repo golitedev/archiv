@@ -160,3 +160,23 @@ Final verification: 42 tests (core 6, engine 11, platform 13, UI unit 1, UI inte
 workspace/all-target check, Clippy with warnings denied and formatting. The prepared font cache is
 an external ignored build input, documented in docs/fonts.md; PC rebuilds need that preparation
 step to reproduce the Inter appearance.
+
+## Single-row chrome and resizing (2026-10-31)
+
+The navigation toolbar, sidebar action duplicates and top-right theme selector were removed.
+File/Edit/View/Help retain the actions; the editable location shares the bottom status area.
+Three short header dividers resize adjacent columns and support focused Left/Right keys.
+Details content uses the pane width and wraps rather than imposing its text width.
+
+Verification: fmt, workspace/all-target check, Clippy with warnings denied, workspace tests
+(**45 passing**) and a native debug build, all locked with build parallelism limited to two.
+The 13 egui integration tests include menu-based Preferences access, bottom address submission
+through the real engine, Up/hidden-file menu access, a header drag that preserves later
+boundaries and idle geometry, and incremental Details drags with empty/long-filename content.
+The address test also covers Enter losing TextEdit focus before navigation is dispatched.
+
+Native X11/Xvfb/Mesa checks used four synthetic sources in Light and Dark: the single top row,
+clean source sidebar, short header separators, expanded duplicate rows, bottom address editing,
+View menu, and actual Details/header drags. Captures remain ignored under artifacts/v2-chrome-*.
+No NAS access or mutation was involved. Native Wayland and hardware compositor behavior remain
+outside this check; the synthetic resize cases do not establish every desktop-specific gesture.

@@ -32,7 +32,9 @@ fn folder_dialog_filter_selection_and_navigation_use_real_read_only_engine() {
     std::fs::write(fixture.path().join("notes.txt"), b"notes").unwrap();
     let mut h = harness().unwrap();
     assert_eq!(h.state().browser().view().phase, Phase::Idle);
-    h.get_by_label("Open folder").click();
+    h.get_by_label("File").click();
+    h.run_steps(3);
+    h.get_by_label("Open folder…").click();
     h.run_steps(3);
     h.get_by_label("Folder path").type_text(fixture.path().to_str().unwrap());
     h.run_steps(2);
@@ -77,9 +79,8 @@ fn keyboard_opens_and_cancels_the_source_dialog_without_scanning() {
 #[test]
 fn theme_choice_applies_to_both_framework_style_branches() {
     let mut h = harness().unwrap();
-    h.get_by_label("Display theme").click();
-    h.run_steps(3);
-    h.get_by_label("Dark").click();
+    preferences(&mut h);
+    h.get_by_label("Choose Dark theme").click();
     h.run_steps(3);
     for branch in [egui::Theme::Light, egui::Theme::Dark] {
         assert!(h.ctx.style_of(branch).visuals.dark_mode);
@@ -98,7 +99,7 @@ fn settings_creates_saved_optional_collection_and_browses_it() {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1180.0, 760.0))
         .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
-    h.get_by_label("Preferences").click();
+    preferences(&mut h);
     h.run_steps(3);
     h.run_steps(20);
     h.get_by_label("Sources").click_accesskit();
@@ -201,7 +202,7 @@ fn preferences_ok_saves_application_configuration_before_closing() {
     let mut h = Harness::builder()
         .with_size(egui::vec2(1180.0, 760.0))
         .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
-    h.get_by_label("Preferences").click();
+    preferences(&mut h);
     h.run_steps(20);
     h.get_by_label("Applications").click_accesskit();
     h.run_steps(10);
@@ -317,7 +318,7 @@ fn manual_scaling_keeps_menus_and_folder_dialog_accessible() {
 #[test]
 fn whole_theme_cards_select_a_theme_and_cancel_restores_appearance() {
     let mut h = harness().unwrap();
-    h.get_by_label("Preferences").click();
+    preferences(&mut h);
     h.run_steps(20);
     h.get_by_label("Choose Dark theme").click();
     h.run_steps(5);
@@ -325,7 +326,7 @@ fn whole_theme_cards_select_a_theme_and_cancel_restores_appearance() {
     h.get_by_label("Cancel").click_accesskit();
     h.run_steps(5);
     assert!(!h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode);
-    h.get_by_label("Preferences").click();
+    preferences(&mut h);
     h.run_steps(20);
     h.get_by_label("Choose Dark theme").click_accesskit();
     h.run_steps(5);
@@ -350,7 +351,7 @@ fn failed_apply_does_not_commit_appearance_cancel_baseline() {
         let mut h = Harness::builder()
             .with_size(egui::vec2(1180.0, 760.0))
             .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
-        h.get_by_label("Preferences").click();
+        preferences(&mut h);
         h.run_steps(20);
         h.get_by_label("Choose Dark theme").click_accesskit();
         h.run_steps(5);
@@ -367,5 +368,107 @@ fn failed_apply_does_not_commit_appearance_cancel_baseline() {
         h.get_by_label("Cancel").click_accesskit();
         h.run_steps(5);
         assert_eq!(h.ctx.style_of(egui::Theme::Dark).visuals.dark_mode, !fail);
+    }
+}
+
+fn preferences(h: &mut Harness<'_, ArchivApp>) {
+    h.get_by_label("Edit").click();
+    h.run_steps(3);
+    h.get_by_label("Preferences…").click();
+    h.run_steps(20);
+}
+
+#[test]
+fn bottom_address_and_menu_navigation_replace_the_toolbar() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fixture.path().join("child")).unwrap();
+    let mut h = harness().unwrap();
+    assert!(h.query_by_label("Display theme").is_none());
+    assert!(h.query_by_label("Show hidden files").is_none());
+    assert!(h.query_by_label("Refresh").is_none());
+    assert!(h.query_by_label("Preferences…").is_none());
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    h.get_by_label("View").click();
+    h.run_steps(3);
+    h.get_by_label("Enter a location…    Ctrl+L").click();
+    h.run_steps(3);
+    let address = h.get_by_label("Location address");
+    assert!(address.rect().top() > 700.0);
+    address.click();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    h.get_by_label("Location address").type_text(fixture.path().join("child").to_str().unwrap());
+    h.run_steps(3);
+    assert_eq!(h.get_by_label("Location address").value().as_deref(), fixture.path().join("child").to_str());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new("child"));
+    h.get_by_label("View").click();
+    h.run_steps(3);
+    h.get_by_label("Show hidden files").click();
+    h.run_steps(3);
+    h.get_by_label("View").click();
+    h.run_steps(3);
+    h.get_by_label("Up    Alt+Up").click();
+    h.run_steps(3);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new(""));
+    assert_eq!(h.state().browser().view().entries.first().unwrap().name, "child");
+}
+
+#[test]
+fn header_drag_changes_only_adjacent_columns_and_stays_put_on_idle_frames() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.path().join("notes.txt"), b"notes").unwrap();
+    let mut h = harness().unwrap();
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    let divider = h.get_by_label("Resize Name and Kind columns").rect().center();
+    let size = h.get_by_label("SIZE").rect().left();
+    h.hover_at(divider);
+    h.run_steps(2);
+    h.drag_at(divider);
+    h.run_steps(2);
+    h.hover_at(divider - egui::vec2(25.0, 0.0));
+    h.run_steps(4);
+    let moved = h.get_by_label("Resize Name and Kind columns").rect().center();
+    assert!((moved.x - (divider.x - 25.0)).abs() < 2.0);
+    assert!((h.get_by_label("SIZE").rect().left() - size).abs() < 1.0);
+    h.drop_at(moved);
+    h.run_steps(5);
+    assert!((h.get_by_label("Resize Name and Kind columns").rect().center().x - moved.x).abs() < 1.0);
+}
+
+#[test]
+fn details_splitter_tracks_the_pointer_with_empty_and_selected_content() {
+    let fixture = tempfile::tempdir().unwrap();
+    let name = "a-long-synthetic-filename-that-must-wrap-within-the-details-pane-without-moving-its-divider.txt";
+    std::fs::write(fixture.path().join(name), b"notes").unwrap();
+    let mut h = harness().unwrap();
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    for selected in [false, true] {
+        if selected {
+            h.get_by_label(name).click();
+            h.run_steps(3);
+        }
+        let initial = h.get_by_label("DETAILS").rect().left();
+        let start = egui::pos2(initial - 17.0, 250.0);
+        h.hover_at(start);
+        h.run_steps(2);
+        h.drag_at(start);
+        h.run_steps(2);
+        for distance in [12.0, 24.0, 36.0, 24.0, 12.0, 0.0] {
+            h.hover_at(start - egui::vec2(distance, 0.0));
+            h.run_steps(3);
+            let left = h.get_by_label("DETAILS").rect().left();
+            assert!((left - (initial - distance)).abs() < 3.0, "initial {initial}, distance {distance}, left {left}");
+        }
+        h.drop_at(start);
+        h.run_steps(3);
+        assert!((h.get_by_label("DETAILS").rect().left() - initial).abs() < 3.0);
     }
 }

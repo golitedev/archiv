@@ -112,9 +112,10 @@ Turning animation off changes timing, not the distance of a scroll or the result
 
 ## Archiv layout and content
 
-- Left navigation: user-configured merged collections (no fixed media categories), physical sources, local folders,
-  recovery and transfer queue. Virtual collection icons/labels differ from physical source locations.
-- Top area: navigation/breadcrumbs, search, source filters and contextual actions. A future Ctrl+K
+- Left navigation: user-configured merged collections (no fixed media categories) and physical sources.
+  Virtual collection icons/labels differ from physical source locations. Recovery is in File.
+- Top area: a single row with Archiv branding, File/Edit/View/Help and search. Navigation actions
+  live in menus; theme selection lives only in Preferences. The editable location sits at the bottom. A future Ctrl+K
   command palette shares command definitions with menus and shortcuts. Do not add a second action registry.
 - Center: virtualized file/title list, with optional later grid view. Visible source badges and
   contributor counts resolve duplicate locations; selection stays stable through sort/filter updates.
@@ -196,10 +197,13 @@ menu shortcuts hidden behind a modifier. See safety.md for enforceable behavior 
 
 ## Implemented file-manager chrome
 
-File/Edit/View/Help use ordinary text menus. Search occupies the top right; navigation remains
-separate below it. Home tasks use rounded neutral inset panels. Preferences groups appearance,
+File/Edit/View/Help use ordinary text menus in the sole top row, alongside branding and search.
+View contains location entry, Up, Refresh, Cancel scan and hidden-file visibility; Edit contains
+Preferences and File contains Recovery. The bottom location control supports Ctrl+L and Enter. Home tasks use rounded neutral inset panels. Preferences groups appearance,
 sources, collections, applications and safeguards, with blue primary pill buttons. Compact file
 rows are 26 logical points with rounded selection, disclosure arrows and meaningful tinted SVGs.
-Metadata columns have aligned headers and no full-height divider/resize handles. The flexible name
-column adapts to window/panel width. These patterns follow the supplied PdfCraft reference without
-copying its branding, PDF-specific workflows, fonts or toolkit forks.
+Metadata columns have aligned headers and short draggable dividers confined to the header.
+Dragging resizes adjacent columns without moving later boundaries; focused dividers also accept
+Left/Right keys. The Name column adapts to window/panel width. Details fills its requested width
+and wraps its contents rather than letting text size the pane. These patterns follow the supplied PdfCraft reference without
+copying its branding, PDF-specific workflows or toolkit forks.

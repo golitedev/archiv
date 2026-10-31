@@ -1,4 +1,5 @@
 //! Native configurable file manager. Rendering dispatches typed, deduplicated engine commands.
+mod columns;
 mod fonts;
 mod settings;
 mod theme;
@@ -47,6 +48,7 @@ pub struct ArchivApp {
     location_input: String,
     edit_location: bool,
     focus_location: bool,
+    columns: columns::Columns,
 }
 impl ArchivApp {
     /// Assemble without scanning any implicit source.
@@ -76,6 +78,7 @@ impl ArchivApp {
             location_input: String::new(),
             edit_location: false,
             focus_location: false,
+            columns: Default::default(),
         }
     }
     /// Headless engine inspection for tests.
@@ -216,7 +219,6 @@ impl ArchivApp {
         egui::Panel::top("menus")
             .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(16, 8)))
             .show(ui, |ui| {
-                let narrow = ui.available_width() < 680.0;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("archiv").size(20.0));
                     ui.add_space(14.0);
@@ -293,6 +295,27 @@ impl ArchivApp {
                                     }
                                 });
                                 ui.menu_button("View", |ui| {
+                                    if ui.button("Enter a location…    Ctrl+L").clicked() {
+                                        self.edit_address();
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(self.browser.can_up(), egui::Button::new("Up    Alt+Up"))
+                                        .on_disabled_hover_text("Already at the root")
+                                        .clicked()
+                                    {
+                                        command = Some(Command::Up);
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(self.browser.is_loading(), egui::Button::new("Cancel scan"))
+                                        .on_disabled_hover_text("No scan is running")
+                                        .clicked()
+                                    {
+                                        command = Some(Command::Cancel);
+                                        ui.close();
+                                    }
+                                    ui.separator();
                                     if ui.button("Refresh").clicked() {
                                         command = Some(Command::Refresh);
                                         ui.close();
@@ -309,88 +332,19 @@ impl ArchivApp {
                             });
                         },
                     );
-                    if !narrow {
-                        self.search_toolbar(ui, &ctx, modal, &t, &mut command);
-                    }
-                });
-                if narrow {
                     self.search_toolbar(ui, &ctx, modal, &t, &mut command);
-                }
-            });
-        egui::Panel::top("navigation")
-            .frame(egui::Frame::new().fill(t.workspace).inner_margin(egui::Margin::symmetric(16, 8)))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Open folder").clicked() {
-                        self.open_dialog();
-                    }
-                    if ui
-                        .add_enabled(self.browser.can_up(), egui::Button::new("Up"))
-                        .on_disabled_hover_text("Already at the root")
-                        .clicked()
-                    {
-                        command = Some(Command::Up);
-                    }
-                    if ui
-                        .add_enabled(self.browser.view().phase != Phase::Idle, egui::Button::new("Refresh"))
-                        .on_disabled_hover_text("Open a folder first")
-                        .clicked()
-                    {
-                        command = Some(Command::Refresh);
-                    }
-                    if self.browser.is_loading() && ui.button("Cancel scan").clicked() {
-                        command = Some(Command::Cancel);
-                    }
-                    ui.separator();
-                    if self.edit_location {
-                        let address = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut self.location_input)
-                                    .char_limit(16384)
-                                    .desired_width(ui.available_width())
-                                    .hint_text("/absolute/folder"),
-                            )
-                            .accessible_name("Location address");
-                        if self.focus_location {
-                            address.request_focus();
-                            self.focus_location = false;
-                        }
-                        if address.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            command = Some(Command::BrowsePath(self.location_input.clone().into()));
-                            self.edit_location = false;
-                        }
-                        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                            self.edit_location = false;
-                        }
-                    } else {
-                        let label = if let Some(id) = self.browser.view().collection {
-                            self.browser
-                                .library()
-                                .collections
-                                .iter()
-                                .find(|c| c.id == id)
-                                .map_or_else(|| "Merged view".into(), |c| format!("{} / merged view", c.label))
-                        } else if let Some(location) = &self.browser.view().location {
-                            self.browser.source(location.source).map_or(String::new(), |source| {
-                                display_name(source.root.join(location.path.as_path()).as_os_str())
-                            })
-                        } else {
-                            "Enter a location…  Ctrl+L".into()
-                        };
-                        if ui
-                            .add(egui::Button::new(label).frame(false).truncate())
-                            .on_hover_text("Edit location · Ctrl+L")
-                            .clicked()
-                        {
-                            self.edit_address();
-                        }
-                    }
                 });
             });
         egui::Panel::bottom("status")
             .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(16, 7)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2((ui.available_width() - 210.0).max(100.0), 30.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| self.location_bar(ui, &mut command),
+                    );
+                    ui.separator();
                     let status = match self.browser.view().phase {
                         Phase::Idle => "No folder opened",
                         Phase::Loading => "Reading…",
@@ -467,15 +421,6 @@ impl ArchivApp {
                                 });
                             });
                         }
-                        ui.add_space(22.0);
-                        ui.separator();
-                        ui.checkbox(&mut self.show_hidden, "Show hidden files");
-                        if ui.button("Preferences").clicked() {
-                            self.open_preferences();
-                        }
-                        if ui.button("Recovery").clicked() {
-                            self.recovery = true;
-                        }
                     });
                 });
         }
@@ -486,7 +431,9 @@ impl ArchivApp {
                 .max_size(360.0)
                 .frame(egui::Frame::new().fill(t.panel).inner_margin(16))
                 .show(ui, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Fill the requested pane width; text must wrap inside that geometry.
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                         ui.small("DETAILS");
                         ui.add_space(12.0);
                         if let Some(entry) = self.selected.as_ref().and_then(|id| self.browser.entry(id)) {
@@ -836,6 +783,52 @@ impl ArchivApp {
             ctx.request_repaint();
         }
     }
+    fn location_bar(&mut self, ui: &mut egui::Ui, command: &mut Option<Command>) {
+        if self.edit_location {
+            let address = ui
+                .add(
+                    egui::TextEdit::singleline(&mut self.location_input)
+                        .char_limit(16384)
+                        .desired_width(ui.available_width())
+                        .hint_text("/absolute/folder"),
+                )
+                .accessible_name("Location address");
+            if self.focus_location {
+                address.request_focus();
+                self.focus_location = false;
+            }
+            if (address.has_focus() || address.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                *command = Some(Command::BrowsePath(self.location_input.clone().into()));
+                self.edit_location = false;
+            }
+            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.edit_location = false;
+            }
+        } else {
+            let label = if let Some(id) = self.browser.view().collection {
+                self.browser
+                    .library()
+                    .collections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map_or_else(|| "Merged view".into(), |c| format!("{} / merged view", c.label))
+            } else if let Some(location) = &self.browser.view().location {
+                self.browser
+                    .source(location.source)
+                    .map_or(String::new(), |source| display_name(source.root.join(location.path.as_path()).as_os_str()))
+            } else {
+                "Enter a location…  Ctrl+L".into()
+            };
+            if ui
+                .add_sized([ui.available_width(), 30.0], egui::Button::new(label).truncate())
+                .accessible_name("Current location · Ctrl+L")
+                .on_hover_text("Edit location · Ctrl+L")
+                .clicked()
+            {
+                self.edit_address();
+            }
+        }
+    }
     fn search_toolbar(
         &mut self,
         ui: &mut egui::Ui,
@@ -845,16 +838,6 @@ impl ArchivApp {
         command: &mut Option<Command>,
     ) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            egui::ComboBox::from_id_salt("theme")
-                .selected_text(self.preferences.theme.label())
-                .width(76.0)
-                .show_ui(ui, |ui| {
-                    for value in [ThemePreference::System, ThemePreference::Light, ThemePreference::Dark] {
-                        ui.selectable_value(&mut self.preferences.theme, value, value.label());
-                    }
-                })
-                .response
-                .accessible_name("Display theme");
             let search = ui
                 .scope(|ui| {
                     let style = ui.style_mut();
@@ -869,7 +852,7 @@ impl ArchivApp {
                         egui::TextEdit::singleline(&mut self.query)
                             .id(egui::Id::unique("filename-filter"))
                             .hint_text("Search…  Enter for subfolders")
-                            .desired_width(240.0)
+                            .desired_width((ui.available_width() - 24.0).clamp(70.0, 240.0))
                             .char_limit(4096)
                             .margin(egui::Margin::symmetric(12, 7)),
                     )
@@ -887,19 +870,11 @@ impl ArchivApp {
     }
     fn file_list(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, command: &mut Option<Command>) {
         let width = ui.available_width();
-        let location_width = if self.browser.view().search { 200.0 } else { 96.0 };
-        let name_width = (width - 149.0 - location_width).max(90.0);
-        let columns = [
-            (0.0, name_width, "NAME"),
-            (name_width + 8.0, 55.0, "KIND"),
-            (name_width + 71.0, 70.0, "SIZE"),
-            (name_width + 149.0, location_width, "LOCATION"),
-        ];
-        let (header, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
-        for (offset, cell_width, label) in columns {
-            let rect = egui::Rect::from_min_size(header.min + egui::vec2(offset, 0.0), egui::vec2(cell_width, 26.0));
-            widgets::cell(ui, rect, ("header", label), label, t.muted, true);
-        }
+        let [name_width, kind_width, size_width, location_width] =
+            self.columns.header(ui, width, self.browser.view().search, t);
+        let kind_offset = name_width;
+        let size_offset = name_width + kind_width;
+        let location_offset = size_offset + size_width;
         ui.separator();
         if self.rows.is_empty() {
             ui.weak(if self.browser.view().phase == Phase::Loading {
@@ -971,8 +946,8 @@ impl ArchivApp {
                     });
                 }
                 for (offset, cell_width, text) in [
-                    (name_width + 8.0, 55.0, entry.kind.label().to_owned()),
-                    (name_width + 71.0, 70.0, entry.bytes.map(format_size).unwrap_or_else(|| "—".into())),
+                    (kind_offset, kind_width, entry.kind.label().to_owned()),
+                    (size_offset, size_width, entry.bytes.map(format_size).unwrap_or_else(|| "—".into())),
                 ] {
                     widgets::cell(
                         ui,
@@ -1014,7 +989,7 @@ impl ArchivApp {
                 let location_response = widgets::cell(
                     ui,
                     egui::Rect::from_min_size(
-                        rect.min + egui::vec2(name_width + 149.0, 0.0),
+                        rect.min + egui::vec2(location_offset, 0.0),
                         egui::vec2(location_width, 26.0),
                     ),
                     ("location", &id),

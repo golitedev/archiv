@@ -6,8 +6,9 @@ moving their contents.
 
 ## Available now
 
-- Native File/Edit/View/Help menus, a top-right search field, neutral home panels and Light/Dark/System
-  preferences. Compact rounded rows use licensed, tinted Lucide icons for folders and file types.
+- A single top row with File/Edit/View/Help menus and search, a bottom location field, neutral home
+  panels and Light/Dark/System preferences. Navigation and hidden-file visibility live in View;
+  theme selection lives only in Preferences. File-list headers have draggable column dividers. Compact rounded rows use licensed, tinted Lucide icons for folders and file types.
 - Explicit physical sources and optional collections with any names/folders you choose. There are
   no built-in media categories. Saved definitions never start a scan automatically.
 - Ctrl+L edits a physical location; double-click/Enter enters a folder; single-click its arrow to expand/collapse it in place.

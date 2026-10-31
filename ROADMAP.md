@@ -87,3 +87,8 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
 - 2026-10-31: re-audited the requested features against PdfCraft; corrected typography, exact
   selection tokens, resolved-System theme cards, field/focus styling and appearance cancellation.
   Client-specific NFS deployment remains pending; see docs/request-audit.md.
+
+- 2026-10-31: simplified chrome to one menu/search row, moved location entry to the bottom,
+  removed sidebar action duplicates and the toolbar theme selector, added header-only column
+  resizing and constrained Details content to the pane width. Synthetic interaction and native
+  X11 checks cover this slice; broader desktop acceptance remains open.
