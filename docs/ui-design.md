@@ -20,7 +20,13 @@ Use the following baseline tokens consistently. Reference semantic roles from wi
 than embedding RGB literals in rendering code. Add destructive and warning roles only with
 light/dark contrast checks and clear non-color indicators.
 System theme follows desktop preference, with explicit Light/Dark overrides. Persist the user's
-choice; handle missing desktop settings without failing startup.
+choice; handle missing desktop settings without failing startup. Default to System on first launch,
+with Light as the initial fallback when the desktop supplies no preference. While following System,
+react to desktop changes; an explicit Light/Dark choice stays fixed until the user changes it.
+
+Apply the resolved theme to native chrome, menus, combo popups, tooltips, dialogs and text inputs,
+not just the main panels. Theme controls in different places share one saved preference and setter.
+Do not let a framework popup switch to a different palette after repaint or restore.
 
 | Token | Light | Dark |
 | --- | --- | --- |
@@ -46,8 +52,10 @@ choice; handle missing desktop settings without failing startup.
 
 Use `pasteboard` for the file-list workspace, `chrome`/`panel` for navigation and toolbars,
 `card` for dialogs/inspectors, `field` for text entry, `accent_soft` for selected controls and
-`selected` for stronger pressed/selection states. Retain readable text on every state. The
-shadow baseline is black alpha 34 (light) / 120 (dark); keep shadows subtle and local to elevation.
+`selected` for stronger pressed/selection states. Retain readable text on every state. Dialog/window
+shadows use offset (0, 8), blur 28, no spread, black alpha 38 (light) / 110 (dark). Popup shadows use
+offset (0, 4), blur 16, no spread, black alpha 30 (light) / 90 (dark). Treat shadows as elevation cues;
+never use them as the only boundary of a field or selected row.
 Do not make selection, warning, permission or availability distinguishable by color alone.
 
 ## Typography, geometry and controls
@@ -70,6 +78,21 @@ Do not make selection, warning, permission or availability distinguishable by co
 - Truncate display labels on character/grapheme-safe boundaries, keep paths available through
   details/copy, and bound expensive text layout. Full underlying path bytes remain untouched.
 
+## Display scale and font fallback
+
+Provide Auto interface scaling and a saved manual override. Auto follows display scale and desktop
+text preferences without applying either twice. Define manual percentages consistently, document
+their meaning, and keep icon/text metrics in logical points. Recalculate layout and cached visual
+resources when moving between differently scaled displays. Font baselines, field height, clipping
+and line spacing must be checked at ordinary and fractional scales, not just enlarged screenshots.
+Do not patch font metrics or text rasterization globally without native evidence of the problem.
+
+Regular, Medium and SemiBold faces use the same ordered fallback coverage. Support mixed-script
+filenames without shifting neighboring baselines or silently dropping characters. Missing glyphs
+need a visible fallback and the exact original path in the engine. A runtime-installed fallback
+font may be read in place, but must not be copied into artifacts or redistributed. Reproducible
+captures use only approved fonts and report missing coverage rather than relying on the host.
+
 ## Icons and motion
 
 Use Lucide SVGs from a pinned release, preserving required notices when assets are introduced.
@@ -83,6 +106,9 @@ for presses, up to a 1-point offset and 8% icon compression. These are baseline 
 not a requirement to animate every row. Honor reduced-motion settings with immediate feedback;
 no kinetic animation stacking, idle repaint loop, flashing progress or animation required for meaning.
 Use monotonic time. Preserve normal egui scrolling behavior unless evidence warrants customization.
+Reduced-motion handling covers popup transitions, programmatic reveal/scroll, list effects and
+spinners as well as buttons. Offer System/On/Off; unknown system settings must not break startup.
+Turning animation off changes timing, not the distance of a scroll or the result of an action.
 
 ## Archiv layout and content
 
@@ -112,6 +138,11 @@ Ctrl shortcuts and selection modifiers. Destructive keys use the same engine com
 as buttons; Shift+Delete must never secretly bypass recovery. Context-menu and toolbar actions
 must agree. Text entry consumes editing shortcuts before file actions; typing in search must never
 delete selected rows. Drag/drop requires a destination preview and explicit move/copy semantics.
+Dialogs have a deliberate focus order, an accessible title and a safe cancel route; opening them
+must not place a destructive action under a preexisting held key. Destructive confirmation never
+runs from key repeat or a generic default-Enter handler. Focus returns to the invoking control when
+possible. Context-menu dismissal cannot activate a row underneath it. Command names and shortcut
+labels come from shared definitions and remain consistent if interface translation is added.
 
 Preserve IME preedit/commit behavior, Unicode text, clipboard semantics, non-Latin layouts and
 long filenames. Keep user text and accessible labels in logical order; do not reverse strings for
@@ -122,18 +153,38 @@ Prevent ambiguous overlapping hit targets. One input gesture has one action owne
 captured gestures. No independent shortcut/pointer handlers may both execute the same operation.
 No files are modified as a side effect of hovering, previewing, opening a menu or changing selection.
 
+## Frame lifecycle and effect ownership
+
+Immediate-mode rendering may replay layout within a frame. Admit each user intent once using a
+request ID and relevant view/plan generation; repeated widget evaluation cannot enqueue another
+transfer, launch mpv again or move a second item. Accepted work is not rolled back merely because
+a drawing pass is discarded. Keep engine jobs independent of repaint count and UI visibility.
+
+Own pointer gestures and cursor choice centrally for each overlapping region. A completed gesture
+has one target; cancelled drag/press state is not reused on pointer release or after navigation.
+Use appropriate platform cursors for links, editable text and resizing, and preserve visible focus.
+Do not poll raw pointer state independently from several widgets to decide the same operation.
+
 ## Rendering, testing and acceptance
 
 The UI renders engine state, dispatches intents and consumes bounded events. No filesystem scan,
 SSH connection, rsync wait, index query or mutation may block the frame loop. Prefer a bounded
 worker model and list virtualization over repeated whole-library work. Respect occluded/minimized
-windows and repaint only for state/input/animation changes.
+windows and repaint only for state/input/animation changes. Bound thumbnail decoding, texture uploads,
+GPU cache memory and work admitted per frame as visual previews are introduced. Late results carry
+source/view generations; stale results cannot replace newer entries or leak textures. Release
+unused visual resources when views close. A renderer startup/device failure reports an actionable
+error; evaluate a supported fallback rather than assuming every Arch GPU works. Do not implement
+renderer recovery or a custom rendering backend in this documentation-only stage.
 
 Before a UI slice is called complete, inspect actual native light/dark output on synthetic data,
 keyboard and focus behavior, scaling, empty/loading/offline/error states, long labels and duplicate
 locations. Add egui interaction/accessibility tests once tooling exists. Linux Wayland and X11
 support is a target requiring evidence, not something supplied by this document. Never publish real
 NAS paths, personal media lists, account data or screenshots containing unapproved assets.
+
+Use the [native UI acceptance checklist](ui-review.md) for each implemented slice. Record actual
+coverage and outstanding limitations; requirements in these documents are not passing tests.
 
 ## Destructive UI rules
 

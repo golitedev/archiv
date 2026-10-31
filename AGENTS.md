@@ -21,7 +21,7 @@ These rules define Archiv's engineering, interface and data-safety requirements.
 
 ## 2. UI contract
 
-Read `docs/ui-design.md` before any UI change.
+Read `docs/ui-design.md` before any UI change and use `docs/ui-review.md` for acceptance.
 - Maintain the documented Archiv design tokens: light/dark/system themes, quiet neutral
   surfaces, blue accents, Inter typography, Lucide SVG icons, shared geometry and spacing.
 - Use Archiv branding and original or properly licensed visual materials.
@@ -33,6 +33,10 @@ Read `docs/ui-design.md` before any UI change.
 - Provide accessible names, visible keyboard focus, non-color status cues, keyboard navigation,
   logical text order, IME-safe input, scaling and reduced-motion behavior. No Unicode/emoji icons.
 - Stable item IDs must include source identity. A display label or row index is not a file ID.
+- Repeated egui layout passes must never repeat commands, launches or mutations. Dispatch intents
+  with unique request identities; deduplicate before executing effects, not by counting paint calls.
+- Menus, toolbars, shortcuts and any future automation share command IDs, availability checks and
+  policy decisions. Layout code does not invent a second command or permission registry.
 - Disabled actions explain why. Virtual collections never masquerade as physical directories.
   Dangerous previews list physical targets and sources. No hidden selection expansion.
 - Check real native UI output when UI is implemented. Use synthetic filenames and data in captures.
@@ -87,7 +91,9 @@ Use Lucide SVGs and openly licensed fonts from maintained releases; no proprieta
 unknown-origin files, copied branding or redistributed system fonts. Pin and verify external font
 inputs rather than committing font binaries. Review dependency-bundled resources as well.
 Choose dependencies compatible with Archiv's project licensing; external programs remain separate
-integrations with their own terms.
+integrations with their own terms. Only openly reusable or contributor-original assets are allowed;
+"free for personal use" and unverified source claims are insufficient. Runtime system-font fallback
+must never become bundled output. Refer to the asset document before adding or publishing resources.
 
 ## 6. Verification and development habits
 
@@ -99,5 +105,7 @@ integrations with their own terms.
   checks as the project grows. Do not claim asset/layer/GUI tooling exists until implemented.
 - Tests use synthetic fixtures, not personal files, NAS paths or real SSH credentials. Add meaningful
   tests for merge identity and destructive decisions before enabling mutation, not tests of empty stubs.
+- A UI feature needs headless engine evidence and native interaction/appearance checks before it
+  is marked complete. A compiling placeholder or screenshot alone is not functional evidence.
 - Keep public docs and status aligned with reality. Document only Archiv's actual tooling,
   implementation status and requirements; do not rely on private repositories or outside workflows.

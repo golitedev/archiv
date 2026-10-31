@@ -55,3 +55,5 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
 
 - 2026-10-31: prepared docs, rules and standard-library-only crate placeholders. No feature code.
 - 2026-10-31: made project instructions self-contained and removed external design-reference material.
+- 2026-10-31: completed the design-guidance review; clarified theme/scale/font behavior, exactly-once
+  command dispatch, resource limits and native acceptance criteria. Documentation only.

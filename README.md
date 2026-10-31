@@ -28,6 +28,7 @@ No NAS settings or files have been changed. The binary prints a scaffold notice 
 - [Agent and contributor rules](AGENTS.md) — authoritative project instructions.
 - [Architecture](docs/architecture.md) — crate boundaries and planned data flow.
 - [UI design](docs/ui-design.md) — palette, typography, controls and interactions.
+- [UI review](docs/ui-review.md) — native appearance, accessibility and behavior acceptance checklist.
 - [Safety and permissions](docs/safety.md) — policies, recovery, race conditions and enforcement limits.
 - [Development](docs/development.md) — toolchain, validation and implementation workflow.
 - [Roadmap](ROADMAP.md) — small future milestones and current status.

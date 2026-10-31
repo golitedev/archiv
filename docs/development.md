@@ -30,6 +30,8 @@ packaging dependencies and exact egui/eframe features belong to the first UI mil
 4. Implement against synthetic temporary sources. Never borrow a real NAS library as test data.
 5. Run scoped checks (`cargo test -p archiv-core -j 2`, etc.); workspace checks remain cheap at this stage.
 6. Inspect native UI output when changing UI. Keep native tests/screenshots reproducible and synthetic.
+   Use [the UI acceptance checklist](ui-review.md), including replayed-layout command dispatch,
+   focus/accessibility, theme consistency and fractional display scaling.
 7. Update docs/status and asset notices when relevant, review the diff, stage the task's files and commit.
 
 No automatic PR, push, publishing or CI workflow is set up. All project instructions live in
