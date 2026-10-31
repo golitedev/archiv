@@ -1,7 +1,6 @@
 # archiv-core
 
-Byte-preserving physical source/entry identities, validated relative paths, file-kind metadata,
-single-line display escaping and deterministic folder-first sorting. No IO or GUI dependencies.
-
-Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
-[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.
+Byte-preserving physical identities and relative paths, deterministic directory merging, versioned
+library definitions, file-handler selection and deny-by-default recovery policy. No IO or GUI
+dependencies. Source/entry identity is independent of display labels. See ../../docs/architecture.md,
+../../docs/safety.md and ../../docs/file-actions.md before changing rules.

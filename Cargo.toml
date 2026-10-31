@@ -16,7 +16,7 @@ archiv-engine = { path = "crates/engine" }
 archiv-ui-egui = { path = "crates/ui-egui" }
 egui = { version = "0.37", default-features = false, features = ["default_fonts", "serde"] }
 eframe = { version = "0.37", default-features = false, features = ["glow", "wayland", "x11", "accesskit", "clipboard", "persistence", "default_fonts"] }
-egui_extras = { version = "0.37", default-features = false }
+egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
 serde = { version = "1", features = ["derive"] }
 rustix = { version = "1", features = ["fs"] }
 tempfile = "3"

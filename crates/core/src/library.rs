@@ -21,6 +21,12 @@ pub struct Collection {
 pub struct LibrarySettings {
     /// Supported schema version (currently 1).
     pub version: u32,
+    /// Configurable external applications.
+    #[serde(default)]
+    pub openers: crate::actions::Openers,
+    /// Deny-by-default recovery permissions and protections.
+    #[serde(default)]
+    pub recovery: Vec<crate::actions::RecoveryPolicy>,
     /// Physical roots, at most 32.
     pub sources: Vec<Source>,
     /// Optional merged folders, at most 16.
@@ -28,7 +34,13 @@ pub struct LibrarySettings {
 }
 impl Default for LibrarySettings {
     fn default() -> Self {
-        Self { version: 1, sources: Vec::new(), collections: Vec::new() }
+        Self {
+            version: 1,
+            openers: Default::default(),
+            recovery: Vec::new(),
+            sources: Vec::new(),
+            collections: Vec::new(),
+        }
     }
 }
 impl LibrarySettings {
@@ -37,6 +49,7 @@ impl LibrarySettings {
         if self.version != 1 || self.sources.len() > 32 || self.collections.len() > 16 {
             return Err("Unsupported library version or too many sources/collections".into());
         }
+        self.openers.validate()?;
         let mut ids = HashSet::new();
         let mut roots = HashSet::new();
         for source in &self.sources {
@@ -45,6 +58,7 @@ impl LibrarySettings {
                 || !ids.insert(source.id)
                 || !roots.insert(&source.root)
                 || !source.root.is_absolute()
+                || source.root.components().any(|c| c.as_os_str() == crate::actions::RECOVERY_DIR)
                 || source.root.as_os_str().len() > 16384
                 || source.root.components().any(|c| matches!(c, std::path::Component::ParentDir))
                 || source.label.trim().is_empty()
@@ -57,6 +71,19 @@ impl LibrarySettings {
                 && (remote.len() > 1024 || !remote.contains(":/") || remote.chars().any(char::is_whitespace))
             {
                 return Err("NFS source needs an exact server:/export identity".into());
+            }
+        }
+        let mut policies = HashSet::new();
+        if self.recovery.len() > 32 {
+            return Err("Too many recovery policies".into());
+        }
+        for policy in &self.recovery {
+            if !ids.contains(&policy.source)
+                || !policies.insert(policy.source)
+                || policy.allowed.len() > 128
+                || policy.protected.len() > 128
+            {
+                return Err("Invalid, duplicate or oversized recovery policy".into());
             }
         }
         let mut collection_ids = HashSet::new();
@@ -116,6 +143,7 @@ mod tests {
             bytes: None,
             modified: None,
             mode: 0,
+            identity: Default::default(),
         }
     }
     #[test]

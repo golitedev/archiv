@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const HELP: &str = "Archiv — read-only native file browser\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH\n  archiv --list-collection ID [--library FILE]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nSettings configures mounted sources and optional merged collections. Linux mounts NFS separately. File mutation and transfers are not implemented.";
+const HELP: &str = "Archiv — native file manager\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH [--search QUERY]\n  archiv --list-collection ID [--library FILE] [--search QUERY]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nPreferences configures sources, collections, applications and recovery safeguards. Recovery is disabled until configured. Linux mounts NFS separately. No permanent deletion or transfers.";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut theme = None;
     let mut library_path = None;
     let mut collection = None;
+    let mut search = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--help" | "-h") => {
@@ -32,6 +33,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                 browse = Some(absolute(args.next().ok_or("--browse requires a path")?)?)
             }
             Some("--list") if list.is_none() => list = Some(absolute(args.next().ok_or("--list requires a path")?)?),
+            Some("--search") if search.is_none() => {
+                search = Some(
+                    args.next()
+                        .ok_or("--search requires a query")?
+                        .into_string()
+                        .map_err(|_| "Search query must be UTF-8")?,
+                );
+            }
             Some("--library") if library_path.is_none() => {
                 library_path = Some(absolute(args.next().ok_or("--library requires a settings file path")?)?);
             }
@@ -70,13 +79,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         if browse.is_some() || theme.is_some() {
             return Err("--list-collection cannot be combined with GUI options".into());
         }
-        return headless(Command::BrowseCollection(id), library, library_path);
+        return headless(Command::BrowseCollection(id), library, library_path, search);
     }
     if let Some(path) = list {
         if browse.is_some() || theme.is_some() {
             return Err("--list cannot be combined with GUI options".into());
         }
-        return headless(Command::AddSource(path), library, library_path);
+        return headless(Command::AddSource(path), library, library_path, search);
+    }
+    if search.is_some() {
+        return Err("--search requires --list or --list-collection".into());
     }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
@@ -124,6 +136,7 @@ fn headless(
     command: Command,
     library: archiv_core::library::LibrarySettings,
     library_path: PathBuf,
+    search: Option<String>,
 ) -> Result<(), Box<dyn Error>> {
     let (wake_tx, wake_rx) = std::sync::mpsc::sync_channel(1);
     let mut browser = Browser::new(
@@ -133,14 +146,16 @@ fn headless(
         }),
     )?;
     browser.configure(library, library_path)?;
-    browser.execute(1, command)?;
-    while browser.view().phase == Phase::Loading {
-        browser.poll();
-        if browser.view().phase != Phase::Loading {
-            break;
-        }
-        if wake_rx.recv_timeout(Duration::from_secs(30)).is_err() {
-            return Err("Listing timed out; source unchanged".into());
+    for (request, command) in (1..=2).zip(std::iter::once(command).chain(search.into_iter().map(Command::Search))) {
+        browser.execute(request, command)?;
+        while browser.view().phase == Phase::Loading {
+            browser.poll();
+            if browser.view().phase != Phase::Loading {
+                break;
+            }
+            if wake_rx.recv_timeout(Duration::from_secs(30)).is_err() {
+                return Err("Listing timed out; source unchanged".into());
+            }
         }
     }
     if let Phase::Failed(error) = &browser.view().phase {

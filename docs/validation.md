@@ -82,3 +82,47 @@ inventory/configuration was not copied into Git. Exports, mounts, permissions an
 not changed. Live NFS connection/reconnect acceptance, native Wayland, screen readers and mixed-DPI
 acceptance remain unverified. NFS configuration remains system administration, and mount checks
 are per read rather than continuous monitoring. Aliases, cached search and playback remain pending.
+
+## File-manager polish, applications and guarded recovery (2026-10-31)
+
+The final suite has **39 passing tests**: core 6, engine 11, platform 13 and UI 9 (one settings regression and eight interactions).
+The settings regression preserves multiple collection folders on one source and the explicit root
+allowlist through editing; this test fails against the previous editor implementation, which collapsed those
+member paths. Additional coverage includes inline expansion/collapse and generation invalidation, recursive name
+search with distinct physical hits, address navigation retaining source identity, source policy and
+single-use preview/confirm/restore flows, literal external-process arguments, and generic example
+configuration with recovery disabled. Existing byte-preserving identity and missing-mount tests remain.
+
+Recovery tests use synthetic local trees only. They exercise protected folders/ancestors/subtrees,
+virtual-target denial, stale entries and parent-symlink replacement, unsafe/private recovery storage,
+missing NFS mounts, permission refusal, restore collisions, non-UTF-8 names, and prepared-manifest
+reconciliation. Thread-local fault injection fails manifest persistence before and after rename:
+the original or recoverable payload remains intact. Empty pre-manifest jobs are reconciled without
+cleanup. Temporarily disabling protection evaluation makes its regression fail; disabling stale
+name checks makes the source-preservation regression fail. Implementations were restored afterward.
+No NAS contents were moved, deleted or used as fixtures.
+
+The UI tests create/save a generic source/collection, expand a folder without navigation, retain its
+parent while filtering, save an application through OK, and cancel then confirm a physical recovery
+move. The Delete shortcut requests a preview; the cancel path preserves the source. Accessibility
+checks remain enabled. Manual 100/125/150/200% scales retain menus and the folder dialog in egui input
+checks. Narrow logical widths fold side panels while menus retain source/collection access.
+
+The actual native eframe/Glow application was inspected with Xvfb/Mesa and XTest mouse input in both
+Light and Dark at a 1180×760 client area. Captures show text menus, full top-right search, neutral
+home panels, aligned metadata headers without vertical resize lines, 26-point nested rows, meaningful
+tinted icons, rounded selection and categorized Preferences. Native inspection caught and corrected
+search-field squeezing and header/row misalignment. The Light recovery preview shows one physical
+source/path and recovery destination; it was cancelled. Safeguards and appearance preferences were
+also inspected. Captures and scripts remain ignored under artifacts; no HTML mockup or webview was
+used. Default egui fonts remain in use; Inter is not claimed as shipped.
+
+Fmt, workspace/all-target check, Clippy with warnings denied and workspace tests pass. Headless
+--list --search was exercised on the synthetic tree. Lucide SVG hashes match the pinned provenance
+record; licensing is retained beside assets. No vendor/toolkit patch or private design dependency.
+
+Deployment limits remain: no writable-NFS rename/fsync/disconnect/server-crash or real-library
+mutation acceptance. A read-only NAS inspection found NFS inactive. Server/client setup needs the
+intended PC's LAN address/access; no packages, exports, services, mounts or permissions were changed.
+Native Wayland, hardware GPUs, screen readers, mixed-DPI and native high-scale compositor acceptance
+remain unverified. See file-actions.md for persisted identity, durability and final-rename race limits.

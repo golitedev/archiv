@@ -1,151 +1,280 @@
-//! Native library editor. All persistence and filesystem checks go through the engine.
+//! Categorized native preferences; settings writes are admitted through the engine.
+use crate::{Preferences, ThemePreference, theme::Tokens, widgets};
+use archiv_core::actions::{ProtectedPath, RecoveryPolicy};
 use archiv_core::library::{Collection, LibrarySettings};
 use archiv_core::{Location, RelativePath, Source, SourceId};
 use archiv_engine::Command;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
+#[derive(Clone, Copy, PartialEq)]
+enum Page {
+    Appearance,
+    Sources,
+    Collections,
+    Applications,
+    Safeguards,
+}
 pub(crate) struct Editor {
     draft: LibrarySettings,
-    paths: HashMap<(u64, SourceId), String>,
+    page: Page,
+    members: HashMap<u64, Vec<(SourceId, String)>>,
+    allowed: HashMap<SourceId, String>,
+    protected: HashMap<SourceId, String>,
+    subtrees: HashMap<SourceId, String>,
     error: Option<String>,
 }
 impl Editor {
     pub fn new(draft: LibrarySettings) -> Self {
-        let paths = draft
+        let members = draft
             .collections
             .iter()
-            .flat_map(|c| {
-                c.members.iter().map(move |m| ((c.id, m.source), m.path.as_path().to_string_lossy().into_owned()))
+            .map(|c| {
+                (c.id, c.members.iter().map(|m| (m.source, m.path.as_path().to_string_lossy().into_owned())).collect())
             })
             .collect();
-        Self { draft, paths, error: None }
-    }
-    pub fn show(&mut self, ui: &mut egui::Ui, pending: bool, status: Option<&str>) -> Option<Command> {
-        ui.heading("Library settings");
-        ui.label("Sources are saved, but never scanned automatically at startup.");
-        ui.label("Mount NFS shares in Linux first. Archiv does not install exports or mount disks.");
-        ui.small("For NFS, use the exact mount point and server:/export shown by findmnt on this PC. An SSH alias may not be a network hostname.");
-        let mut command = None;
-        egui::ScrollArea::vertical().max_height((ui.ctx().content_rect().height() - 280.0).clamp(100.0, 440.0)).show(
-            ui,
-            |ui| {
-                ui.add_enabled_ui(!pending, |ui| {
-                    ui.heading("Physical sources");
-                    let mut remove = None;
-                    for source in &mut self.draft.sources {
-                        ui.push_id(source.id, |ui| {
-                            ui.separator();
-                            ui.horizontal(|ui| {
-                                ui.label(format!("Source {}", source.id.0));
-                                if ui.button("Remove source").clicked() {
-                                    remove = Some(source.id);
-                                }
-                            });
-                            field(ui, "Source name", &mut source.label, 128);
-                            let mut root = source.root.to_string_lossy().into_owned();
-                            if field(ui, "Local mount / folder", &mut root, 16384) {
-                                source.root = PathBuf::from(root);
-                            }
-                            let mut nfs = source.nfs_remote.is_some();
-                            if ui.checkbox(&mut nfs, "Require expected NFS mount").changed() {
-                                source.nfs_remote = nfs.then(|| "server:/export".into());
-                            }
-                            if let Some(remote) = &mut source.nfs_remote {
-                                field(ui, "Expected NFS export", remote, 1024);
-                            }
-                        });
-                    }
-                    if let Some(id) = remove {
-                        self.draft.sources.retain(|s| s.id != id);
-                        for collection in &mut self.draft.collections {
-                            collection.members.retain(|m| m.source != id);
+        let mut allowed = HashMap::new();
+        let mut protected = HashMap::new();
+        let mut subtrees = HashMap::new();
+        for policy in &draft.recovery {
+            allowed.insert(
+                policy.source,
+                policy
+                    .allowed
+                    .iter()
+                    .map(|p| {
+                        if p.as_path().as_os_str().is_empty() {
+                            std::borrow::Cow::Borrowed(".")
+                        } else {
+                            p.as_path().to_string_lossy()
                         }
-                    }
-                    if self.draft.sources.len() < 32 && ui.button("Add source").clicked() {
-                        let id = self.draft.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
-                        self.draft.sources.push(Source {
-                            id: SourceId(id),
-                            label: format!("Disk {id}"),
-                            root: PathBuf::new(),
-                            nfs_remote: Some("server:/export".into()),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            protected.insert(
+                policy.source,
+                policy
+                    .protected
+                    .iter()
+                    .filter(|p| !p.subtree)
+                    .map(|p| p.path.as_path().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+            subtrees.insert(
+                policy.source,
+                policy
+                    .protected
+                    .iter()
+                    .filter(|p| p.subtree)
+                    .map(|p| p.path.as_path().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        Self { draft, page: Page::Appearance, members, allowed, protected, subtrees, error: None }
+    }
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        preferences: &mut Preferences,
+        pending: bool,
+        status: Option<&str>,
+        t: &Tokens,
+    ) -> Option<Command> {
+        ui.horizontal_wrapped(|ui| {
+            for (page, label) in [
+                (Page::Appearance, "Appearance"),
+                (Page::Sources, "Sources"),
+                (Page::Collections, "Collections"),
+                (Page::Applications, "Applications"),
+                (Page::Safeguards, "Safeguards"),
+            ] {
+                ui.selectable_value(&mut self.page, page, label);
+            }
+        });
+        ui.separator();
+        let mut command = None;
+        egui::ScrollArea::vertical().id_salt("preferences-body").max_height((ui.ctx().content_rect().height()-250.0).clamp(120.0,520.0)).show(ui,|ui|{
+            ui.set_min_height(300.0);
+            if self.page==Page::Appearance {
+                ui.heading("Appearance");ui.label("Choose how Archiv looks on your desktop.");
+                egui::ComboBox::from_id_salt("preferences-theme").selected_text(preferences.theme.label()).show_ui(ui,|ui|{for theme in [ThemePreference::System,ThemePreference::Light,ThemePreference::Dark]{ui.selectable_value(&mut preferences.theme,theme,theme.label());}}).response.accessible_name("Appearance mode");
+                ui.add_space(12.0);let preview_width=((ui.available_width()-64.0)/2.0).clamp(80.0,235.0);ui.horizontal(|ui|{for theme in [ThemePreference::Light,ThemePreference::Dark]{
+                    let selected=preferences.theme==theme;let preview=Tokens::new(theme==ThemePreference::Dark);
+                    egui::Frame::new().fill(preview.workspace).stroke(egui::Stroke::new(if selected{1.5}else{1.0},if selected{t.accent}else{t.border})).corner_radius(8).inner_margin(14).show(ui,|ui|{
+                        ui.vertical(|ui| {
+                            ui.set_width(preview_width);
+                            ui.colored_label(preview.text,format!("{} theme",theme.label()));
+                            let (rect,_) = ui.allocate_exact_size(egui::vec2(preview_width,72.0),egui::Sense::hover());
+                            ui.painter().rect_filled(rect,4,preview.panel);
+                            ui.painter().rect_filled(egui::Rect::from_min_size(rect.min+egui::vec2(8.0,12.0),egui::vec2(42.0,52.0)),3,preview.selected);
+                            for index in 0..3 {ui.painter().rect_filled(egui::Rect::from_min_size(rect.min+egui::vec2(64.0,16.0+(index as f32)*15.0),egui::vec2((preview_width-80.0).max(0.0),3.0)),1,preview.muted);}
+                            if ui.selectable_label(selected,egui::RichText::new(format!("Use {}",theme.label())).color(preview.text)).clicked(){preferences.theme=theme;}
                         });
-                    }
-                    ui.add_space(12.0);
-                    ui.heading("Optional merged collections");
-                    ui.label("Choose contributing sources and a relative folder on each. Nothing is merged on disk.");
-                    let mut remove = None;
-                    for collection in &mut self.draft.collections {
-                        ui.push_id(("collection", collection.id), |ui| {
-                            ui.separator();
-                            field(ui, "Collection name", &mut collection.label, 128);
-                            for source in &self.draft.sources {
-                                ui.push_id(source.id, |ui| {
-                                    let mut enabled = collection.members.iter().any(|m| m.source == source.id);
-                                    if ui.checkbox(&mut enabled, format!("Include {}", source.label)).changed() {
-                                        if enabled {
-                                            collection
-                                                .members
-                                                .push(Location { source: source.id, path: RelativePath::default() });
-                                        } else {
-                                            collection.members.retain(|m| m.source != source.id);
-                                        }
-                                    }
-                                    if enabled {
-                                        let path = self.paths.entry((collection.id, source.id)).or_default();
-                                        field(ui, "Relative folder", path, 16384);
-                                        ui.small("For example: data/media/movies. Empty means the source root.");
-                                    }
-                                });
+                    });
+                }});
+                ui.add_space(14.0);ui.label("Interface size");egui::ComboBox::from_id_salt("interface-scale").selected_text(preferences.scale.map_or_else(||"Auto".into(),|s|format!("{s}%"))).show_ui(ui,|ui|{ui.selectable_value(&mut preferences.scale,None,"Auto");for scale in [75,100,125,150,200]{ui.selectable_value(&mut preferences.scale,Some(scale),format!("{scale}%"));}});
+                ui.small("Auto follows display scaling. Manual percentages multiply the native desktop scale.");ui.checkbox(&mut preferences.reduced_motion,"Reduce motion");
+            }else{ui.add_enabled_ui(!pending,|ui|match self.page{
+                Page::Sources=>{
+                    ui.heading("Physical sources");ui.label("Saved definitions never scan automatically at startup.");ui.small("For NFS, mount the share in Linux, then enter the local mount point and exact server:/export shown by findmnt. SSH aliases are separate.");
+                    let mut remove=None;
+                    for source in &mut self.draft.sources{ui.push_id(source.id,|ui|{
+                        ui.add_space(10.0);ui.separator();field(ui,"Source name",&mut source.label,128);
+                        let mut root=source.root.to_string_lossy().into_owned();if field(ui,"Local mount / folder",&mut root,16384){source.root=PathBuf::from(root);}
+                        let mut nfs=source.nfs_remote.is_some();if ui.checkbox(&mut nfs,"Require expected NFS mount").changed(){source.nfs_remote=nfs.then(||"server:/export".into());}
+                        if let Some(remote)=&mut source.nfs_remote{field(ui,"Expected NFS export",remote,1024);}
+                        if ui.button("Remove source").clicked(){remove=Some(source.id);}
+                    });}
+                    if let Some(id)=remove{self.allowed.remove(&id);self.protected.remove(&id);self.subtrees.remove(&id);self.draft.sources.retain(|s|s.id!=id);self.draft.recovery.retain(|p|p.source!=id);for members in self.members.values_mut(){members.retain(|(source,_)|*source!=id);}for c in &mut self.draft.collections{c.members.retain(|m|m.source!=id);}}
+                    if self.draft.sources.len()<32&&ui.button("Add source").clicked(){let id=self.draft.sources.iter().map(|s|s.id.0).max().unwrap_or(0).saturating_add(1);self.draft.sources.push(Source{id:SourceId(id),label:format!("Source {id}"),root:PathBuf::new(),nfs_remote:None});}
+                }
+                Page::Collections=>{
+                    ui.heading("Optional collections");ui.label("Combine selected folders visually. Nothing is merged or renamed on disk.");let mut remove=None;
+                    for collection in &mut self.draft.collections{ui.push_id(collection.id,|ui|{
+                        ui.separator();field(ui,"Collection name",&mut collection.label,128);
+                        let members=self.members.entry(collection.id).or_default();
+                        for source in &self.draft.sources{ui.push_id(source.id,|ui|{
+                            let mut included=members.iter().any(|(id,_)|*id==source.id);
+                            let check=ui.add_enabled_ui(included||members.len()<32,|ui|ui.checkbox(&mut included,format!("Include {}",source.label))).inner;
+                            if check.changed(){if included{members.push((source.id,String::new()));}else{members.retain(|(id,_)|*id!=source.id);}}
+                            if included {
+                                let mut remove_member=None;
+                                for (index,(id,path)) in members.iter_mut().enumerate().filter(|(_, (id,_))|*id==source.id){
+                                    ui.push_id((id,index),|ui|{
+                                        field(ui,"Relative folder",path,16384);ui.small("Empty means the source root. Otherwise use a source-relative folder path.");
+                                        if ui.button("Remove this folder").clicked(){remove_member=Some(index);}
+                                    });
+                                }
+                                if let Some(index)=remove_member{members.remove(index);}
+                                if ui.add_enabled(members.len()<32,egui::Button::new("Add another folder from this source")).clicked(){members.push((source.id,String::new()));}
                             }
-                            if ui.button("Remove collection").clicked() {
-                                remove = Some(collection.id);
-                            }
-                        });
-                    }
-                    if let Some(id) = remove {
-                        self.draft.collections.retain(|c| c.id != id);
-                    }
-                    if self.draft.collections.len() < 16 && ui.button("Add collection").clicked() {
-                        let id = self.draft.collections.iter().map(|c| c.id).max().unwrap_or(0).saturating_add(1);
-                        self.draft.collections.push(Collection { id, label: "Movies".into(), members: Vec::new() });
-                    }
-                });
-            },
-        );
+                        });}
+                        if ui.button("Remove collection").clicked(){remove=Some(collection.id);}
+                    });}
+                    if let Some(id)=remove{self.members.remove(&id);self.draft.collections.retain(|c|c.id!=id);}
+                    if self.draft.collections.len()<16&&ui.button("Add collection").clicked(){let id=self.draft.collections.iter().map(|c|c.id).max().unwrap_or(0).saturating_add(1);self.members.insert(id,Vec::new());self.draft.collections.push(Collection{id,label:"Collection".into(),members:Vec::new()});}
+                }
+                Page::Applications=>{
+                    ui.heading("Open files with");ui.label("Enter an executable name or absolute path, not a shell command.");ui.small("Archiv supplies -- and the exact physical filename as separate arguments. Applications use your normal user permissions.");
+                    field(ui,"Image viewer",&mut self.draft.openers.images,4096);ui.small("For example: imv");field(ui,"Media player",&mut self.draft.openers.media,4096);ui.small("For example: mpv");field(ui,"Text editor",&mut self.draft.openers.text,4096);ui.small("For example: kwrite");field(ui,"Other files",&mut self.draft.openers.other,4096);ui.small("Leave empty to require an explicit application configuration.");
+                }
+                Page::Safeguards=>{
+                    ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));ui.heading("Recovery and protected folders");});ui.label("Recovery is disabled until explicitly configured for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots, collection roots and recovery storage are always protected. No permanent delete is provided.");
+                    for source in &self.draft.sources{ui.push_id(source.id,|ui|{
+                        ui.separator();ui.strong(&source.label);ui.label(source.root.to_string_lossy());
+                        let mut enabled=self.draft.recovery.iter().any(|p|p.source==source.id&&p.enabled);
+                        if ui.checkbox(&mut enabled,"Allow moves to recovery").changed(){if let Some(policy)=self.draft.recovery.iter_mut().find(|p|p.source==source.id){policy.enabled=enabled;}else{self.draft.recovery.push(RecoveryPolicy{source:source.id,enabled,allowed:Vec::new(),protected:Vec::new()});}}
+                        ui.label("Allowed relative folders (one per line)");multiline(ui,"Allowed folders",self.allowed.entry(source.id).or_default());ui.small("Use . to allow the source subtree; the source root itself stays protected.");
+                        ui.label("Protect folder itself (children may be changed)");multiline(ui,"Protected folders",self.protected.entry(source.id).or_default());
+                        ui.label("Protect entire subtrees");multiline(ui,"Protected subtrees",self.subtrees.entry(source.id).or_default());
+                        ui.small("Protecting a folder also prevents removing any ancestor that contains it. Recovery is on this source filesystem, inside .archiv-recovery; retained items still use disk space.");
+                    });}
+                }
+                Page::Appearance=>{}
+            });}
+        });
         if let Some(error) = &self.error {
             ui.label(error);
         }
         if let Some(status) = status {
             ui.label(status);
         }
-        if ui.add_enabled(!pending, egui::Button::new("Save library")).clicked() {
-            let mut settings = self.draft.clone();
-            let result = (|| {
-                for collection in &mut settings.collections {
-                    for member in &mut collection.members {
-                        member.path = RelativePath::new(
-                            self.paths.get(&(collection.id, member.source)).cloned().unwrap_or_default(),
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
-                }
-                settings.validate()
-            })();
-            match result {
-                Ok(()) => {
-                    self.error = None;
-                    command = Some(Command::SaveLibrary(settings));
-                }
-                Err(error) => self.error = Some(error),
-            }
+        if self.page != Page::Appearance
+            && ui.add_enabled_ui(!pending, |ui| widgets::pill(ui, "Save library", true, t)).inner.clicked()
+        {
+            command = self.save_command();
         }
         command
     }
+    pub fn save_command(&mut self) -> Option<Command> {
+        let mut draft = self.draft.clone();
+        let result = (|| {
+            for c in &mut draft.collections {
+                c.members = self
+                    .members
+                    .get(&c.id)
+                    .into_iter()
+                    .flatten()
+                    .map(|(source, path)| {
+                        Ok(Location { source: *source, path: RelativePath::new(path).map_err(|e| e.to_string())? })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+            }
+            for policy in &mut draft.recovery {
+                policy.allowed = parse_lines(self.allowed.get(&policy.source).map_or("", String::as_str), true)?;
+                policy.protected = parse_lines(self.protected.get(&policy.source).map_or("", String::as_str), false)?
+                    .into_iter()
+                    .map(|path| ProtectedPath { path, subtree: false })
+                    .chain(
+                        parse_lines(self.subtrees.get(&policy.source).map_or("", String::as_str), false)?
+                            .into_iter()
+                            .map(|path| ProtectedPath { path, subtree: true }),
+                    )
+                    .collect();
+            }
+            draft.validate()
+        })();
+        match result {
+            Ok(()) => {
+                self.error = None;
+                return Some(Command::SaveLibrary(draft));
+            }
+            Err(error) => self.error = Some(error),
+        }
+        None
+    }
+}
+fn parse_lines(text: &str, root: bool) -> Result<Vec<RelativePath>, String> {
+    text.lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| RelativePath::new(if root && line == "." { "" } else { line }).map_err(|e| e.to_string()))
+        .collect()
 }
 fn field(ui: &mut egui::Ui, label: &str, value: &mut String, limit: usize) -> bool {
     ui.label(format!("{label}:"));
     ui.add(egui::TextEdit::singleline(value).char_limit(limit).desired_width(f32::INFINITY))
         .accessible_name(label)
         .changed()
+}
+fn multiline(ui: &mut egui::Ui, label: &str, value: &mut String) {
+    ui.add(egui::TextEdit::multiline(value).desired_rows(2).char_limit(16384).desired_width(f32::INFINITY))
+        .accessible_name(label);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn editing_preserves_multiple_roots_from_one_source_and_root_allowlist() {
+        let config = LibrarySettings {
+            sources: vec![Source {
+                id: SourceId(1),
+                label: "Archive".into(),
+                root: "/synthetic/archive".into(),
+                nfs_remote: None,
+            }],
+            collections: vec![Collection {
+                id: 1,
+                label: "Documents".into(),
+                members: vec![
+                    Location { source: SourceId(1), path: RelativePath::new("one").unwrap() },
+                    Location { source: SourceId(1), path: RelativePath::new("two").unwrap() },
+                ],
+            }],
+            recovery: vec![RecoveryPolicy {
+                source: SourceId(1),
+                enabled: true,
+                allowed: vec![RelativePath::default()],
+                protected: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let mut editor = Editor::new(config.clone());
+        let Some(Command::SaveLibrary(saved)) = editor.save_command() else {
+            panic!("Valid multiple-root settings could not be saved")
+        };
+        assert_eq!(saved, config);
+    }
 }

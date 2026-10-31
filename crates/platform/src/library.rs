@@ -48,6 +48,14 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     #[test]
+    fn supported_example_is_generic_and_denies_mutation_by_default() {
+        let config: LibrarySettings =
+            serde_json::from_str(include_str!("../../../examples/archiv.example.json")).unwrap();
+        config.validate().unwrap();
+        assert!(config.recovery.iter().all(|policy| !policy.enabled));
+        assert!(config.openers.program(std::path::Path::new("file.txt")).is_none());
+    }
+    #[test]
     fn round_trip_is_private_and_invalid_save_preserves_previous_file() {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("settings/library.json");

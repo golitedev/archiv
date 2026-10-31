@@ -39,7 +39,10 @@ Sources remain individually browsable. To combine four movie folders:
 2. Add a collection named Movies.
 3. Explicitly include each disk and specify its relative movie-folder path, for example
    `data/media/movies` when the source mounts the disk root. Paths may differ per source.
-4. Save library, close Settings, and choose Movies in the sidebar.
+4. Save library, close Preferences, and choose Movies in the sidebar.
+
+Use Add another folder from this source when a collection should include several folders on one
+disk. Membership remains explicit; creating a collection never includes a source automatically.
 
 An empty relative path means the source root. Paths with `..`, absolute paths and unknown source
 references are rejected. Nothing is included by default. TV, Anime or other collections can be
@@ -64,11 +67,37 @@ Use the UI to edit it. Source and collection IDs persist across restarts and ord
 Settings saves run in bounded workers. The adapter writes a private (0600) temporary file beside
 the destination, syncs its contents, atomically replaces the file and syncs the parent directory.
 Save failures remain visible. If parent-directory sync fails after rename, the new file may be
-visible with uncertain crash durability; restart/reload before relying on it. There is no migration
-from the conceptual TOML policy example. Invalid existing JSON stops startup with a path and error,
+visible with uncertain crash durability; restart/reload before relying on it. The supported example is examples/archiv.example.json; its source paths are placeholders. Invalid existing JSON stops startup with a path and error,
 without replacing it with defaults. A saved library never starts a scan until explicitly opened.
 
 `archiv --list-collection ID --library /absolute/file.json` uses the same engine without a GUI.
 Output lists physical contributors with their source labels/paths; incomplete listings return an
 error. The total visible collection is bounded at 50,000 physical entries before folder grouping,
-with a visible truncation warning. There is no index/search cache, playback, transfer or mutation.
+with a visible truncation warning. There is no persistent search index or transfer. Applications and opt-in recovery are described in file-actions.md.
+
+## Writable sources and deployment boundary
+
+Browsing works with read-only exports/mounts. Opt-in recovery additionally requires writable NFS
+access, directory-rename support and reliable server/filesystem sync behavior. Only enable writable
+access after choosing the permitted client, reviewing existing NAS permissions and validating a
+synthetic test folder. A writable mount also permits other applications to write within their own
+filesystem authority; Archiv's protected folders do not globally restrict those programs.
+
+For disk-root exports, use the server's `mountpoint` export option so an unmounted NAS disk is not
+replaced by its bare local directory. An illustrative export (not an installed configuration) is:
+
+```text
+/srv/storage/disk-a 192.0.2.10(ro,sync,no_subtree_check,root_squash,mountpoint)
+```
+
+The path must actually be a mounted disk on the server, and the address must be the intended PC.
+Writable access uses `rw` only when explicitly desired; keep `sync`, root squashing and client
+restriction. Do not export to `*`, chown the library, disable root squashing or run Archiv as root.
+Mounts/exports remain system administration; the app does not escalate permissions.
+
+Package names are documented by [Debian](https://packages.debian.org/en/nfs-kernel-server) and
+[Arch](https://archlinux.org/packages/core/x86_64/nfs-utils/). Export semantics are documented by
+[the NFS server guide](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/configuring_and_using_network_file_services/deploying-an-nfs-server_configuring-and-using-network-file-services).
+Actual client-specific setup requires the PC's LAN address and access to that PC. The implementation
+session inspected the authorized NAS read-only; no packages, services, exports, permissions or
+client mounts were changed.

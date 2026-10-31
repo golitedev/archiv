@@ -1,11 +1,11 @@
 # Architecture
 
-Status: read-only physical browsing implemented; other sections describe future work. Updated: 2026-10-31.
+Status: native browsing/collections, external applications and opt-in recovery implemented; remaining sections describe future work. Updated: 2026-10-31.
 
 ## Goal and boundaries
 
-Archiv is a Rust-native Linux file manager on an Arch PC. The NAS currently has four independent
-XFS disks. Local and mounted NFS paths are storage sources; the app builds logical views over them.
+Archiv is a Rust-native Linux file manager. Physical sources may occupy independent local or
+NAS filesystems. Local and mounted NFS paths are storage sources; the app builds logical views over them.
 It does not pool disks, repartition, relocate libraries or implement a filesystem.
 
 NFS is the planned browsing/playback route. External rsync over SSH is the planned transfer route
@@ -24,8 +24,8 @@ Do not couple the domain model to `/mnt/diskN`, a username, one SSH alias or a s
 
 Core models, the Linux directory reader, the bounded browsing engine and the native shell now
 exist. The executable supports a GUI and `--list` through the same engine. The UI uses upstream
-egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. No library mutation,
-index or SSH transport adapter is present. Enforce dependency direction
+egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. Opt-in recovery/restore and configurable external application launches are implemented.
+No persistent index, transfer or SSH transport adapter is present. Enforce dependency direction
 in reviews; no automated layer checker exists yet.
 
 ## Identity and visual merging
@@ -73,8 +73,8 @@ Record actual enforcement scope in the UI. Details: [safety.md](safety.md).
 
 ## Persistence and configuration
 
-Versioned JSON library settings are implemented; future policy TOML and a local SQLite metadata
-index are not. The conceptual TOML example remains unsupported. Library version 1 rejects unknown
+Versioned JSON library settings are implemented; transfer configuration and a local SQLite metadata
+index are not. The supported example JSON contains placeholder sources and disabled recovery. Library version 1 rejects unknown
 fields and invalid references. Settings are saved by bounded engine workers using a private
 same-directory temporary file, file sync, atomic rename and parent-directory sync. A directory
 sync failure reports uncertain durability, even if the replacement is visible. Sources restore
@@ -92,7 +92,18 @@ from NFS mounts. Transfers over SSH bypass any Samba recycle policy.
 
 ## Deliberately deferred
 
-Aliases, policy config parsing, indexing, mutation, SSH transfers/authentication,
+Aliases, transfer-policy parsing, indexing, cross-disk mutation/transfer, SSH authentication,
 packaging, CI services and a NAS agent. The design is
 small enough to revise as the first read-only slice supplies evidence; do not add a plugin framework
 or separate service for every crate.
+
+## Current recovery and application adapters
+
+The engine admits single-use physical previews, recovery, inspection and restore through its same
+command path. Policy is deny-by-default and shared with UI availability explanations. Platform IO
+uses anchored descriptors, no-follow/no-cross-mount resolution, prepared manifests and atomic
+no-replace rename. See file-actions.md for durability, final filename-race limits and test evidence.
+Application launches are structured worker operations with bounded child tracking/reaping. Rendering
+never scans storage, waits for a process, installs NFS packages or edits mount configuration.
+Inline branches share the fixed worker pool and view generation; recursive search is explicit and
+bounded, not a scan hidden behind text editing.

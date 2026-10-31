@@ -1,79 +1,79 @@
 # Archiv
 
-A Rust-native Linux file manager for an Arch PC and a NAS. The first implementation is a
-**read-only physical-folder browser** with a native egui/eframe interface.
+A Rust-native Linux file manager for local folders and mounted NAS sources. Archiv can combine
+folders from separate disks into configurable **visual collections**, without pooling disks or
+moving their contents.
 
 ## Available now
 
-- Open explicitly chosen local folders through an absolute path or `--browse`.
-- Save physical/NFS sources and optional merged collections in native **Settings**, without startup scans.
-- Browse exact-name folders from multiple disks as one virtual folder; duplicate files retain locations.
-- Navigate real subdirectories and return to a source root; add multiple physical sources.
-- Incremental background enumeration, cancel/refresh, folder-first ordering and a virtualized list.
-- Filter filenames in the current directory, show hidden files, select items and inspect physical
-  paths, byte sizes and observed Unix modes. No recursive size computation or index scan.
-- Light/Dark/System appearance and a saved reduced-animation preference. Sources and paths are
-  session-only through Open folder; Settings explicitly saves definitions without scanning them at restart.
-- Headless read-only listing through the same engine, without a display server.
+- Native File/Edit/View/Help menus, a top-right search field, neutral home panels and Light/Dark/System
+  preferences. Compact rounded rows use licensed, tinted Lucide icons for folders and file types.
+- Explicit physical sources and optional collections with any names/folders you choose. There are
+  no built-in media categories. Saved definitions never start a scan automatically.
+- Ctrl+L edits a physical location; double-click/Enter enters a folder; single-click its arrow to expand/collapse it in place.
+  Exact-name directories combine recursively; duplicate files stay separate with source labels.
+- Type to filter the current/expanded view; press Enter in search to explicitly search subfolders.
+  Recursive search is bounded, cancellable and returns physical locations rather than guessed duplicates.
+- Open regular files with configurable executable names/paths, for example imv, mpv or kwrite.
+  No shell command interpolation or automatic execution of the selected file.
+- Opt-in **Move to recovery**, protected folders/subtrees and allowlists per source. Nothing is
+  permanently deleted. Explicit previews name one physical target; virtual folders cannot be deleted.
+- Same-source recovery manifests, restart reconciliation and restore without overwriting. Recovery
+  storage is excluded from browsing and stays on the source filesystem.
+- Configured NFS sources verify their expected export/mount against held descriptors. Missing mounts
+  never fall back to the local directory underneath them. Linux sets up the actual NFS connection.
 
-No deletion, rename, move, upload, permission change or application-launch operation exists yet.
-NAS inspection used read-only SSH; no exports, mounts, permissions or files were changed.
+See [NAS sources and collections](docs/nas-setup.md), [recovery and applications](docs/file-actions.md),
+[validation evidence](docs/validation.md), and the [roadmap](ROADMAP.md).
 
 ## Run
 
-Rust 1.95 or newer is required by the selected egui/eframe 0.37 release. Use stable Rust with
-rustfmt and Clippy. GUI execution needs a native Linux Wayland/X11 session and OpenGL support.
+Stable Rust **1.95+**, rustfmt and Clippy are required. Native GUI execution needs a Linux
+Wayland/X11 session and OpenGL. Run the GUI on your graphical PC, not an unrelated SSH server;
+paths refer to the machine running Archiv. Headless listing/search needs no display.
 
 ```sh
 cargo run -p archiv --locked
 cargo run -p archiv --locked -- --browse "$HOME/Videos" --theme dark
-cargo run -p archiv --locked -- --list /absolute/local/folder
+cargo run -p archiv --locked -- --list /absolute/folder
+cargo run -p archiv --locked -- --list /absolute/folder --search example
 cargo run -p archiv --locked -- --list-collection 1 --library /absolute/library.json
 cargo run -p archiv --locked -- --help
 ```
 
-On Arch, install the standard native runtime libraries for your Wayland/X11/OpenGL session. This
-project uses dynamic loading for the windowing/graphics stack; it does not install system packages.
-The GUI must run on the machine with the graphical session (normally your Arch PC), or through
-properly configured display forwarding. `--list` works over SSH without a GUI. All paths refer to
-the machine **running Archiv**, not automatically to the NAS.
+Ctrl+O opens a folder, Ctrl+L edits its address, Ctrl+F focuses search, F5 refreshes, and Alt+Up navigates to the parent.
+Delete requests a recovery preview only when a text field is not being edited. Confirmation is
+separate. Shift+Delete provides no purge shortcut. Applications are configured under
+**Edit → Preferences → Applications**. Source definitions, collection membership and recovery
+permissions are saved under the corresponding Preferences tabs. OK saves before closing;
+Save library applies without closing. Appearance preferences apply immediately.
 
-Ctrl+O opens the source-path dialog, Ctrl+F focuses filtering, F5 refreshes, and Alt+Up navigates
-up within the source. Double-click a folder or select it and use Open selected folder. Symbolic
-links appear in listings but are not traversed. File opening/playback is not implemented yet.
+Library definitions use versioned JSON at `$XDG_CONFIG_HOME/archiv/library.json`, falling back to
+`~/.config/archiv/library.json`. `--library FILE` selects another file. The [example JSON](examples/archiv.example.json) uses placeholder values and keeps recovery disabled;
+replace its paths/export identities with your own or use Preferences. No credentials or inventories
+are saved. Open folder adds a temporary source; use Preferences to save one deliberately.
 
-The first directory listing is limited to 50,000 entries, emitted in batches of at most 128 by two
-bounded workers. Linux `openat2` (kernel 5.6+) and mounted procfs are required. Failures are reported;
-there is no permissive path-resolution fallback. These reads are not a filesystem sandbox or a
-substitute for NAS permissions. Configured NFS sources require their exact mount point and
-server:/export identity. Each read checks mountinfo against the held descriptor before and after enumeration, refusing missing/different mounts
-and nested mount traversal. This identifies the local mount, not cryptographically the server.
+## Limits
 
-## Appearance and current limits
+Linux openat2 (kernel 5.6+) and procfs are required. Links are listed but never traversed. Bounded
+workers keep filesystem/process work outside rendering; a blocked NFS kernel call cannot always
+be interrupted. Listings/inline trees retain at most 50,000 entries; recursive search visits at
+most 50,000 entries, 10,000 queued directories and 32 relative levels. Limits/errors are visible.
+There is no persistent index or automatic background library scan.
 
-The interface implements Archiv's neutral surfaces, blue accents, spacing, control geometry and
-shared theme treatment. It currently uses egui's default fonts and text action labels. Inter,
-JetBrains Mono, Lucide icons, full desktop text-scaling/reduced-motion discovery, broader font
-coverage and complete keyboard/accessibility acceptance remain M1 work. See
-[font resources](docs/third-party-assets.md) and [validation evidence](docs/validation.md).
+Recovery is denied until configured and remains constrained by actual filesystem/NAS permissions.
+Archiv safeguards govern Archiv actions, not Dolphin, an external editor, SSH or other NFS clients.
+Recovery retains disk usage and is not a backup. See the documented [durability and concurrency
+limits](docs/file-actions.md) before enabling it on writable sources. No rename/copy/move-to-another-disk,
+transfer, purge or permission editor exists. Actual writable NFS recovery/disconnect testing has
+not been performed on the user's NAS; tests use synthetic local fixtures and injected failures.
 
-Use **Settings → Add source** for each mounted disk, then **Add collection** and explicitly include
-its contributing sources and relative folders (for example `data/media/movies`). Merging is optional,
-exact and case-sensitive; it changes no disk contents. Direct source browsing remains available.
-See [NAS setup and collections](docs/nas-setup.md) for the Debian/Arch setup boundary and configuration.
+The interface uses egui fallback fonts; Inter/JetBrains Mono, full desktop font/motion discovery,
+complete Wayland/accessibility and mixed-DPI acceptance remain unfinished. Manual UI scaling and
+reduced animation are available. Icons are pinned Lucide SVGs; [provenance/licenses](assets/icons/README.md).
+No toolkit fork, copied PdfCraft branding, telemetry, network control listener or runtime font download.
 
-Recursive search, SQLite indexing, aliases, mpv, rsync and configurable recovery are not implemented.
-The [example config](examples/archiv.example.toml) remains a future policy sketch, not the supported
-library format. Settings uses versioned JSON at `$XDG_CONFIG_HOME/archiv/library.json` (or
-`~/.config/archiv/library.json`); `--library FILE` selects another file. No credentials are saved.
-
-## Project documents
-
-- [Instructions](AGENTS.md), [development](docs/development.md), [roadmap](ROADMAP.md).
-- [Architecture](docs/architecture.md), [decisions](docs/decisions.md), [safety](docs/safety.md).
-- [UI design](docs/ui-design.md), [native UI checklist](docs/ui-review.md), [asset guidelines](docs/assets.md).
-
-## Checks
+## Checks and project documents
 
 ```sh
 cargo fmt --all -- --check
@@ -82,10 +82,9 @@ cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
 cargo test --workspace --locked -j 2
 ```
 
-Tests use temporary synthetic directories; they never operate on your real library. No private
-keys, personal inventories or machine-specific source paths are committed. `artifacts/` is ignored.
+[Instructions](AGENTS.md), [development](docs/development.md), [architecture](docs/architecture.md),
+[safety](docs/safety.md), [UI design](docs/ui-design.md), [UI acceptance](docs/ui-review.md),
+[assets](docs/assets.md), [font notices](docs/third-party-assets.md).
 
-## License
-
-Archiv code and documentation use [0BSD](LICENSE). Dependencies and their resources retain their
-own terms; the default-font records are in [third-party assets](docs/third-party-assets.md).
+Code/documentation: [0BSD](LICENSE). Dependencies and assets retain their own terms. Tests/captures
+use synthetic data. `artifacts/` is ignored; personal paths/configs and NAS inventories stay out of Git.

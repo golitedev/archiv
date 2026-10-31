@@ -1,6 +1,6 @@
 # Deletion, recovery and permission design
 
-Status: mutation/recovery requirements only. Read-only path validation exists; no mutation API exists. Updated: 2026-10-31.
+Status: opt-in recovery/restore implemented. Transfers, purge and permission editing remain requirements only. Updated: 2026-10-31.
 
 ## Enforcement scope
 
@@ -14,7 +14,7 @@ helper, a protocol-specific mechanism, or a different storage layer. Snapshots/b
 recovery systems. Archiv configures none of them. Never promise that an app-only rule protects
 against arbitrary NAS commands or a compromised unrestricted account.
 
-## Planned policy model
+## Policy model
 
 Start deny-by-default for mutation until valid explicit configuration exists. Policy is evaluated
 in the core/engine, never just in a button. A future rule set may specify:
@@ -32,7 +32,7 @@ weakening them. A protected parent is a structural target restriction, not a bla
 intentional operations on permitted descendants. Conversely, deleting a parent cannot evade
 restrictions on any selected descendant. Virtual collections are not physical operation targets.
 
-## Planned recovery protocol
+## Recovery protocol
 
 Delete means "move to recovery"; permanent purge is a separate capability and is not in the first
 mutation milestone. For an explicit physical item, reserve a unique recovery identity on the same
@@ -90,4 +90,16 @@ Before enabling writes: synthetic tests of denied structural roots, merged-targe
 ancestor/child selections, path escapes, symlink swaps, stale identities, missing mounts,
 non-UTF-8 paths, full disk, read-only exports, name collisions, disconnected NFS, partial transfer,
 journal interruption and restore conflicts. Use injected failures and temporary filesystems;
-never use the real NAS library as a test fixture. No mutation API exists in the current read-only implementation.
+never use the real NAS library as a test fixture. Opt-in recovery/restore is implemented; broader NAS/transfer fault acceptance remains incomplete.
+
+## Current implementation evidence and limits
+
+The implemented JSON schema contains source-specific enabled/allowed/protected recovery policies.
+Source/collection roots and recovery storage are always protected; virtual directories have no
+mutation target. There is no recursive unlink, purge, cross-device fallback or permission editor.
+Prepared/completed manifests retain raw filename bytes and filesystem/root/object identities.
+Synthetic tests exercise the policy, stale/unsafe paths, missing mounts, collision refusal, private
+storage, permission failure, interrupted records and persistence errors before/after rename.
+These are not live NFS/server power-loss tests. The public behavior, recovery state handling and
+remaining final-syscall concurrency limit are documented in file-actions.md. Filesystem permissions
+and other clients remain outside Archiv policy enforcement.

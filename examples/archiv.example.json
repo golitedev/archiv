@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "sources": [
+    {"id": 1, "label": "Archive A", "root": "/mnt/archiv/archive-a", "nfs_remote": "nas.example:/exports/archive-a"},
+    {"id": 2, "label": "Archive B", "root": "/mnt/archiv/archive-b", "nfs_remote": "nas.example:/exports/archive-b"}
+  ],
+  "collections": [
+    {"id": 1, "label": "Documents", "members": [{"source": 1, "path": "documents"}, {"source": 2, "path": "work/documents"}]}
+  ],
+  "openers": {"images": "", "media": "", "text": "", "other": ""},
+  "recovery": [
+    {"source": 1, "enabled": false, "allowed": ["documents"], "protected": [{"path": "documents", "subtree": false}]},
+    {"source": 2, "enabled": false, "allowed": ["work/documents"], "protected": [{"path": "work", "subtree": false}]}
+  ]
+}

@@ -1,7 +1,8 @@
-//! Bounded, no-follow read-only directory access on Linux. No library-content mutation API exists.
+//! Linux directory enumeration, settings and explicit recovery/process adapters.
 
 pub mod library;
 mod mount;
+pub mod operations;
 
 use archiv_core::{Entry, EntryId, EntryKind, RelativePath, Source};
 use std::fmt;
@@ -83,6 +84,12 @@ impl DirectoryReader for LocalDirectoryReader {
             summary.cancelled = true;
             return Ok(summary);
         }
+        if request.path.as_path().components().any(|c| c.as_os_str() == archiv_core::actions::RECOVERY_DIR) {
+            return Err(ReadError {
+                path: request.source.root.clone(),
+                error: io::Error::other("Recovery storage is not a browsing location"),
+            });
+        }
         let physical = request.source.root.join(request.path.as_path());
         let failure = |error: io::Error| ReadError { path: physical.clone(), error };
         let flags = rustix::fs::OFlags::RDONLY
@@ -140,6 +147,9 @@ impl DirectoryReader for LocalDirectoryReader {
                 continue;
             };
             let name = item.file_name();
+            if name == archiv_core::actions::RECOVERY_DIR {
+                continue;
+            }
             let Ok(path) = request.path.child(&name) else {
                 summary.skipped = summary.skipped.saturating_add(1);
                 continue;
@@ -161,6 +171,7 @@ impl DirectoryReader for LocalDirectoryReader {
                 bytes: (kind == EntryKind::File).then_some(metadata.len()),
                 modified: metadata.modified().ok(),
                 mode: metadata.mode(),
+                identity: operations::identity(&metadata),
             });
             summary.entries = summary.entries.saturating_add(1);
             if batch.len() == BATCH_SIZE && !emit(std::mem::replace(&mut batch, Vec::with_capacity(BATCH_SIZE))) {

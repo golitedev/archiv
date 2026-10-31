@@ -1,6 +1,6 @@
 # Development
 
-Status: first read-only implementation, updated 2026-10-31.
+Status: configurable native browser with opt-in recovery, updated 2026-10-31.
 
 ## Toolchain and execution
 
@@ -41,7 +41,7 @@ sources for dialog/filter/select/navigation, keyboard cancellation and shared th
 Native appearance checks complement these tests; see [validation](validation.md). No custom control
 server, CLI automation protocol or screenshot endpoint exists.
 
-The first UI still uses toolkit fonts and text action labels. Future font/icon work follows
+The UI uses toolkit fonts plus attributed Lucide SVGs and text menus. Future font work follows
 [asset guidelines](assets.md). Do not add product dependencies or a global task framework merely
 to replace the small worker and command abstractions. No CI/push/publication workflow is configured.
 
@@ -51,8 +51,9 @@ Run all user intents through the headless Browser and shared FrameCommands admis
 Never introduce IO into a rendering frame. Worker queues, event payloads and total listings are
 bounded. A cancelled syscall may remain blocked in the kernel; do not join it on the UI thread
 or spawn unlimited replacements. Read metadata without following links. Do not restore navigation
-from persisted paths automatically. Only application-settings writes are available; no library-content mutation API exists: adding one requires the M4 policy
-and recovery evidence in safety.md, not a direct filesystem call in a widget.
+from persisted paths automatically. Recovery/restore writes use the typed engine/descriptor-relative platform adapter described in
+file-actions.md. New mutation capabilities still require the safety evidence in safety.md; no direct
+filesystem or process calls belong in widgets.
 
 Review actual native output using the [UI checklist](ui-review.md). Use temporary synthetic files,
 isolated XDG paths and an appropriate display session. Keep captures under ignored artifacts/;

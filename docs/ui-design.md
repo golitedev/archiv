@@ -7,11 +7,12 @@ This document defines Archiv's native desktop appearance and interaction require
 
 A quiet, compact desktop tool: restrained neutral surfaces, clear hierarchy, thin separators,
 blue interaction accents, readable labels and consistent controls. Give file lists the useful
-space; avoid decorative cards, large banners and marketing copy. Use Archiv's own identity.
+space. Use inset neutral panels for useful home/setup tasks, following the PdfCraft reference;
+avoid decorative banners and marketing filler. Use Archiv's own identity.
 
 Use Rust egui/eframe with Wayland/X11, clipboard and AccessKit support. There is no web runtime.
 Build a small shared set of buttons, fields, tabs and navigation controls in the UI crate. Prefer
-maintained toolkit releases; evaluate external components before adopting them. The first shell uses egui/eframe 0.37. Target fonts and SVG action icons remain deferred. Centralize appearance tokens and layout metrics rather than duplicating them.
+maintained toolkit releases; evaluate external components before adopting them. The first shell uses egui/eframe 0.37. Target fonts remain deferred; attributed Lucide SVGs are used for folders and file types. Centralize appearance tokens and layout metrics rather than duplicating them.
 
 ## Color tokens
 
@@ -111,7 +112,7 @@ Turning animation off changes timing, not the distance of a scroll or the result
 
 ## Archiv layout and content
 
-- Left navigation: merged collections (Movies, TV, Anime), physical sources, local folders,
+- Left navigation: user-configured merged collections (no fixed media categories), physical sources, local folders,
   recovery and transfer queue. Virtual collection icons/labels differ from physical source locations.
 - Top area: navigation/breadcrumbs, search, source filters and contextual actions. A future Ctrl+K
   command palette shares command definitions with menus and shortcuts. Do not add a second action registry.
@@ -192,3 +193,13 @@ exists on multiple disks requires explicit scope. Show denied rules and unavaila
 Confirmation is bound to a plan revision and revalidated by the engine; a UI toggle cannot grant
 filesystem authority. Permission editing and permanent purge are separate workflows, not context
 menu shortcuts hidden behind a modifier. See safety.md for enforceable behavior and limitations.
+
+## Implemented file-manager chrome
+
+File/Edit/View/Help use ordinary text menus. Search occupies the top right; navigation remains
+separate below it. Home tasks use rounded neutral inset panels. Preferences groups appearance,
+sources, collections, applications and safeguards, with blue primary pill buttons. Compact file
+rows are 26 logical points with rounded selection, disclosure arrows and meaningful tinted SVGs.
+Metadata columns have aligned headers and no full-height divider/resize handles. The flexible name
+column adapts to window/panel width. These patterns follow the supplied PdfCraft reference without
+copying its branding, PDF-specific workflows, fonts or toolkit forks.

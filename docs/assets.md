@@ -6,8 +6,7 @@ Status: default toolkit fonts are dependency-bundled; no font binaries are commi
 
 Archiv uses a compact desktop interface with Inter for ordinary UI text, JetBrains Mono for
 selected technical details, and Lucide SVG icons as its target design. The initial shell uses
-toolkit fallback fonts and text actions; see [resource records](third-party-assets.md). No custom
-font or SVG asset is added yet. Use original artwork for Archiv branding.
+toolkit fallback fonts and text actions; see [resource records](third-party-assets.md). Pinned, attributed Lucide SVGs are now bundled; custom fonts remain deferred. Use original artwork for Archiv branding.
 
 Before adding a resource, verify that its terms permit the intended use and distribution. Obtain
 files from an identifiable original release and pin the version. Avoid extracted system fonts,

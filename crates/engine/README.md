@@ -1,9 +1,8 @@
 # archiv-engine
 
-Headless physical-directory browsing with two workers, bounded job/event queues, explicit
-source registration, cancellation, generation-tagged results and within-frame command deduplication.
-Optional recursive merged collections, guarded mounted sources and worker-backed atomic settings
-persistence are implemented. No deletion, transfer or index implementation exists.
-
-Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
-[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.
+Shared headless commands for physical/merged browsing, lazy expansion, bounded recursive search,
+application launch, library settings and deny-by-default recovery/restore. All IO uses two bounded
+workers; events carry view generations and optional branch identities. Frontend command IDs prevent
+replayed effects. Recovery previews are single-use and name explicit physical targets. Children are
+bounded/reaped without waiting in rendering. See ../../docs/architecture.md, ../../docs/safety.md
+and ../../docs/file-actions.md. No transfer, purge or persistent index implementation exists.

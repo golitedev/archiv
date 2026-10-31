@@ -1,10 +1,7 @@
 # archiv-ui-egui
 
-Native themed egui/eframe shell with physical-source navigation, filtering, a virtualized table,
-selection/details and an explicit source-path dialog. UI reads snapshots and dispatches shared
-engine commands. Presentation preferences persist; the native Settings editor explicitly saves sources/collections
-without scanning them on restart. Open folder sources remain session-only. Native/UI interaction
-evidence and remaining visual/accessibility work are in docs/validation.md.
-
-Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
-[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.
+Native text menus, top-right search, compact expandable file rows, attributed tinted Lucide SVGs,
+neutral home panels, categorized preferences and physical recovery confirmations. Renders cached
+engine state and dispatches typed commands. No filesystem/process work happens in frames.
+Presentation preferences use eframe; explicit library settings use atomic platform persistence.
+See ../../docs/ui-design.md, ../../docs/ui-review.md and ../../docs/validation.md.

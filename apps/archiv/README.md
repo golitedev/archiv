@@ -1,6 +1,6 @@
 # archiv executable
 
-Linux native GUI entry point and read-only headless listing. `--help` describes supported arguments.
-Use `--browse PATH` to explicitly select a source, or `--list PATH` without a display server.
-The GUI wires the local reader to the engine and a repaint callback. No NAS or mount configuration,
-mutation, transfer or media-player operation is available yet. See the workspace README.
+Linux native GUI wiring plus display-free --list / --list-collection and optional --search.
+The GUI constructs the same engine, restores definitions without a scan and schedules repaints
+from worker events. Preferences configures applications and opt-in recovery; no app runtime root,
+NFS package installation, transfer or purge route exists. See the workspace README and --help.

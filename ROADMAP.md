@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: M1 polish remains; first M2 mounted-source/optional-collection slice implemented.
+Status: native browsing/collections and an opt-in recovery slice implemented; deployment acceptance remains.
 Updated: 2026-10-31.
 
 ## M0 — preparation (complete)
@@ -16,10 +16,10 @@ Updated: 2026-10-31.
 - Implemented: byte-preserving IDs, no-follow directory reads, bounded workers, cancel/refresh,
   stale-result rejection and headless `--list`; no implicit startup scan.
 - Native X11 appearance and egui interaction evidence are recorded in docs/validation.md.
-- Remaining: target fonts/icons, desktop scale/motion discovery, broader keyboard/native Wayland
+- Remaining: target fonts, desktop text-scale/motion discovery, broader keyboard/native Wayland
   acceptance. Configured NFS mount checks are implemented in the first M2 slice.
 - Verify font/icon redistribution rights and evaluate shared widget needs before adding dependencies.
-- Acceptance: synthetic directory fixtures; no mutation route; long/non-UTF-8 labels; visible errors;
+- Acceptance: synthetic directory fixtures; opt-in recovery is tracked under M4; long/non-UTF-8 labels; visible errors;
   native screenshot/interaction checks. Cold startup performs no unrequested NAS scan.
 
 ## M2 — merged views and mounted NAS sources (in progress)
@@ -27,9 +27,10 @@ Updated: 2026-10-31.
 - Implemented: optional exact-name recursive directory merging, duplicate-location display,
   source browsing, native library settings and atomic versioned persistence.
 - Implemented: configured NFS mount/export/descriptor checks and explicit partial-source errors.
-- Remaining: explicit aliases, source filters within collections and incremental cached search.
+- Implemented: lazy nested rows, explicit bounded recursive search and configurable external file applications.
+- Remaining: aliases, source filters within collections and persistent indexed search.
 - NFS mounts/exports remain operating-system administration; no automatic NAS connection setup.
-- Remaining: mpv launch for an explicit physical file. No network traversal on the UI thread.
+- Configurable applications include mpv; no filesystem/process work runs in the UI frame.
 - Acceptance: collisions across four synthetic sources stay distinct; missing mounts fail closed;
   cancelled scans cannot overwrite newer views. Do not benchmark using real library mutations.
 
@@ -40,15 +41,20 @@ Updated: 2026-10-31.
 - Copy only initially. No source removal, implicit mirroring, `--delete` or secret storage.
 - Acceptance: interruption/disconnect/conflict tests with synthetic fixtures; no source data lost.
 
-## M4 — configurable recovery and permissions (not started)
+## M4 — configurable recovery and permissions (in progress)
 
-- Versioned config parser, conservative policy evaluation and dry-run physical operation plans.
-- Protected paths, virtual-view restrictions, explicit limits, permissions/capability checks.
-- Same-source-filesystem recovery, journal, restore and restart reconciliation.
-- Revalidate descriptor-relative targets and mount identity at execution; fail closed on races.
+- Implemented: versioned JSON configuration, conservative recovery allowlists/protections and single-use previews.
+- Implemented: protected structure/subtrees, virtual-target denial, source/collection root protection,
+  filesystem identity and no-follow descriptor checks.
+- Implemented: same-source recovery, durable prepared/completed manifests, explicit reconciliation
+  and restore without overwriting. No purge, recursive unlink or transfer operation.
+- Revalidate targets/mounts at execution. Post-rename conflicts retain payloads and report uncertainty;
+  see docs/file-actions.md for the final filename-race window and durability limits.
 - Copy-verify-recover moves only after recovery works. Purge remains a distinct future capability.
-- Acceptance: path escape, symlink swaps, stale plan, missing mount, full disk, collisions and crash
-  tests; deny by default; engine decisions identical with and without the GUI.
+- Synthetic acceptance covers policy, path/symlink swaps, stale previews, missing mounts, restore
+  collisions, permission failures and injected persistence failures. Native confirmation is tested.
+- Remaining: real writable-NFS/disconnect/server-durability acceptance and broader adversarial fault
+  testing. No user-library mutation tests. Permission editing, transfers and purge remain absent.
 - Separately decide whether a restricted NAS helper is warranted. App policy is not global protection.
 
 ## Later — only after the foundations
@@ -70,3 +76,8 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
 - 2026-10-31: added saved mounted/local sources, optional merged collections, recursive browsing,
   per-location errors and NFS mount checks. Native settings and synthetic four-disk evidence added.
   Read-only NAS layout inspection only; no server or PC exports/mounts were configured.
+
+- 2026-10-31: replaced toolbar-heavy chrome with text menus, top-right search, home panels and
+  categorized Preferences; added attributed tinted Lucide icons, compact inline expansion, explicit
+  recursive search, configurable applications and opt-in journaled recovery with protected paths.
+  NAS inspection remained read-only; client-specific NFS setup needs PC connection information.

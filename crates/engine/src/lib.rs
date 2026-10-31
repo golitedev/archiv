@@ -1,7 +1,9 @@
 //! Headless, bounded read-only browsing with cancellation and stale-result rejection.
 
+use archiv_core::actions::{ProtectedPath, RecoveryPolicy};
 use archiv_core::library::{LibrarySettings, merge_directories};
 use archiv_core::{Entry, EntryId, EntryKind, Location, RelativePath, Source, SourceId, display_name, sort_entries};
+use archiv_platform::operations::{self, RecoveryPlan, RecoveryRecord};
 use archiv_platform::{DirectoryReader, ReadRequest, ReadSummary};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -14,6 +16,8 @@ use std::sync::{Arc, Mutex, mpsc};
 pub enum Command {
     /// Register a source and browse its root. Requires an absolute physical path.
     AddSource(PathBuf),
+    /// Navigate an absolute address, preserving an existing source identity when possible.
+    BrowsePath(PathBuf),
     /// Browse a configured virtual collection at its root.
     BrowseCollection(u64),
     /// Navigate back within the current physical or virtual view.
@@ -24,8 +28,24 @@ pub enum Command {
     Navigate(Location),
     /// Enter an observed physical directory, without launching files.
     Open(EntryId),
+    /// Expand/collapse a directory in place, using the existing bounded workers.
+    Expand(EntryId),
+    /// Open an explicit regular file with its configured external application.
+    Launch(EntryId),
+    /// Build an immutable physical recovery preview; never mutate here.
+    PreviewRecovery(EntryId),
+    /// Execute one previously previewed recovery move exactly once.
+    ConfirmRecovery(u64),
+    /// Dismiss a preview without executing it.
+    DismissRecovery,
+    /// Explicitly inspect this source's recovery records.
+    ListRecovery(SourceId),
+    /// Restore one explicitly selected recovery job without overwriting.
+    Restore(SourceId, String),
     /// Re-enumerate the current location.
     Refresh,
+    /// Explicit bounded recursive name search below the currently opened locations.
+    Search(String),
     /// Cancel queued/in-flight work cooperatively.
     Cancel,
 }
@@ -61,7 +81,10 @@ pub struct View {
     pub phase: Phase,
     /// Completion limits or skipped entries.
     pub summary: Option<ReadSummary>,
+    /// Results are explicit physical search hits, not same-parent virtual rows.
+    pub search: bool,
     revision: u64,
+    pending: usize,
 }
 impl View {
     /// Change counter for rebuilding presentation caches only when results change.
@@ -80,14 +103,67 @@ impl fmt::Display for EngineError {
 }
 impl std::error::Error for EngineError {}
 
+enum Action {
+    Prepare(u64, Source, Entry, RecoveryPolicy, Vec<(Source, ProtectedPath)>),
+    Recover(RecoveryPlan),
+    List(Source),
+    Restore(Source, RecoveryPolicy, String, Vec<(Source, ProtectedPath)>),
+    Launch(Source, Entry, String),
+}
+enum ActionResult {
+    Preview(Box<RecoveryPlan>),
+    Done(String),
+    Changed(String),
+    Records(SourceId, Vec<RecoveryRecord>),
+}
+fn perform(action: Action, children: &mut Vec<operations::Application>) -> Result<ActionResult, String> {
+    match action {
+        Action::Prepare(id, source, entry, policy, guards) => {
+            operations::prepare(id, source, entry, policy, guards).map(|plan| ActionResult::Preview(Box::new(plan)))
+        }
+        Action::Recover(plan) => {
+            operations::recover(&plan).map(|id| ActionResult::Changed(format!("Moved to recovery: {id}")))
+        }
+        Action::List(source) => {
+            operations::list_recovery(&source).map(|records| ActionResult::Records(source.id, records))
+        }
+        Action::Restore(source, policy, id, guards) => operations::restore(&source, &policy, &id, &guards)
+            .map(|()| ActionResult::Changed("Restored to its original physical path".into())),
+        Action::Launch(source, entry, program) => {
+            let mut running = Vec::new();
+            for mut child in children.drain(..) {
+                if !child.poll()? {
+                    running.push(child);
+                }
+            }
+            *children = running;
+            if children.len() >= 8 {
+                return Err("Application limit reached; close an opened application before trying again".into());
+            }
+            children.push(operations::launch(&source, &entry, &program)?);
+            Ok(ActionResult::Done(format!("Launched {program}")))
+        }
+    }
+}
+/// A lazily loaded inline directory; its identities remain physical even in a collection.
+pub struct Branch {
+    /// Cached directory results and errors.
+    pub view: View,
+    /// Whether rows should be visible. Collapsing never triggers another scan.
+    pub expanded: bool,
+}
 struct Job {
     generation: u64,
     requests: Vec<ReadRequest>,
+    node: Option<EntryId>,
+    action: Option<Action>,
+    search: Option<String>,
     save: Option<(PathBuf, LibrarySettings)>,
     cancel: Arc<AtomicBool>,
 }
 struct Event {
     generation: u64,
+    node: Option<EntryId>,
     result: Update,
 }
 enum Update {
@@ -95,9 +171,11 @@ enum Update {
     Discard(Location),
     Finished(Result<ReadSummary, String>),
     Saved(Result<LibrarySettings, String>),
+    Action(Result<ActionResult, String>),
+    BackgroundError(String),
 }
 
-/// Two bounded workers; no storage mutation or application launch capability exists.
+/// Two bounded workers shared by browsing, configured application launches and opt-in recovery.
 pub struct Browser {
     sources: Vec<Source>,
     view: View,
@@ -113,7 +191,82 @@ pub struct Browser {
     settings_status: Option<String>,
     locations: Vec<Location>,
     history: Vec<Vec<Location>>,
-    pending: usize,
+    branches: HashMap<EntryId, Branch>,
+    operation_pending: bool,
+    operation_status: Option<String>,
+    recovery_preview: Option<RecoveryPlan>,
+    recovery_records: Option<(SourceId, Vec<RecoveryRecord>)>,
+}
+
+fn search(
+    reader: &dyn DirectoryReader,
+    roots: Vec<ReadRequest>,
+    query: &str,
+    cancel: &AtomicBool,
+    emit: &mut dyn FnMut(Vec<Entry>) -> bool,
+) -> Result<ReadSummary, String> {
+    let query = query.to_lowercase();
+    let mut queue: std::collections::VecDeque<_> = roots.into_iter().map(|r| (r, 0usize)).collect();
+    let mut total = ReadSummary::default();
+    let mut visited = 0usize;
+    let mut matches = Vec::new();
+    let mut errors = Vec::new();
+    while let Some((request, depth)) = queue.pop_front() {
+        if cancel.load(Ordering::Acquire) {
+            total.cancelled = true;
+            break;
+        }
+        let mut limit = false;
+        let result = reader.read(&request, cancel, &mut |batch| {
+            for entry in batch {
+                if visited >= archiv_platform::MAX_ENTRIES {
+                    limit = true;
+                    return false;
+                }
+                visited = visited.saturating_add(1);
+                if entry.kind == EntryKind::Directory {
+                    if depth < 32 && queue.len() < 10000 {
+                        queue.push_back((
+                            ReadRequest { source: request.source.clone(), path: entry.id.path.clone() },
+                            depth.saturating_add(1),
+                        ));
+                    } else {
+                        total.truncated = true;
+                    }
+                }
+                if display_name(&entry.name).to_lowercase().contains(&query) {
+                    matches.push(entry);
+                }
+                if matches.len() == archiv_platform::BATCH_SIZE && !emit(std::mem::take(&mut matches)) {
+                    return false;
+                }
+            }
+            true
+        });
+        match result {
+            Ok(summary) => {
+                total.skipped = total.skipped.saturating_add(summary.skipped);
+                total.truncated |= summary.truncated || limit;
+            }
+            Err(error) => {
+                if errors.len() < 32 {
+                    errors.push(error.to_string());
+                }
+            }
+        }
+        if limit {
+            break;
+        }
+    }
+    if !matches.is_empty() && !emit(matches) {
+        total.cancelled = true;
+    }
+    total.entries = visited;
+    total.cancelled |= cancel.load(Ordering::Acquire);
+    if !errors.is_empty() {
+        return Err(format!("Search is incomplete: {}", errors.join("; ")));
+    }
+    Ok(total)
 }
 
 impl Browser {
@@ -130,22 +283,62 @@ impl Browser {
             std::thread::Builder::new()
                 .name(format!("archiv-reader-{number}"))
                 .spawn(move || {
+                    let mut children: Vec<operations::Application> = Vec::new();
                     loop {
+                        let mut failure = None;
+                        children.retain_mut(|child| match child.poll() {
+                            Ok(false) => true,
+                            Ok(true) => false,
+                            Err(error) => {
+                                failure = Some(error);
+                                false
+                            }
+                        });
+                        if let Some(error) = failure {
+                            if events
+                                .send(Event { generation: 0, node: None, result: Update::BackgroundError(error) })
+                                .is_err()
+                            {
+                                return;
+                            }
+                            wake();
+                        }
                         let job = {
                             let Ok(receiver) = jobs.lock() else { return };
-                            receiver.recv()
+                            receiver.recv_timeout(std::time::Duration::from_millis(500))
                         };
-                        let Ok(job) = job else { return };
+                        let job = match job {
+                            Ok(job) => job,
+                            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                        };
                         let send = |result| {
-                            let sent = events.send(Event { generation: job.generation, result }).is_ok();
+                            let sent = events
+                                .send(Event { generation: job.generation, node: job.node.clone(), result })
+                                .is_ok();
                             if sent {
                                 wake();
                             }
                             sent
                         };
+                        if let Some(action) = job.action {
+                            if !send(Update::Action(perform(action, &mut children))) {
+                                return;
+                            }
+                            continue;
+                        }
                         if let Some((path, settings)) = job.save {
                             let result = archiv_platform::library::save(&path, &settings).map(|()| settings);
                             if !send(Update::Saved(result)) {
+                                return;
+                            }
+                            continue;
+                        }
+                        if let Some(query) = job.search {
+                            let result = search(&*reader, job.requests, &query, &job.cancel, &mut |batch| {
+                                send(Update::Batch(batch))
+                            });
+                            if !send(Update::Finished(result)) {
                                 return;
                             }
                             continue;
@@ -177,7 +370,9 @@ impl Browser {
                 entries: Vec::new(),
                 phase: Phase::Idle,
                 summary: None,
+                search: false,
                 revision: 0,
+                pending: 0,
                 collection: None,
                 contributors: HashMap::new(),
                 errors: Vec::new(),
@@ -194,7 +389,11 @@ impl Browser {
             settings_status: None,
             locations: Vec::new(),
             history: Vec::new(),
-            pending: 0,
+            branches: HashMap::new(),
+            operation_pending: false,
+            operation_status: None,
+            recovery_preview: None,
+            recovery_records: None,
         })
     }
 
@@ -232,6 +431,10 @@ impl Browser {
     pub fn sources(&self) -> &[Source] {
         &self.sources
     }
+    /// Any root or inline directory scan is pending.
+    pub fn is_loading(&self) -> bool {
+        self.view.phase == Phase::Loading || self.branches.values().any(|b| b.view.phase == Phase::Loading)
+    }
     /// Current directory state, readable without IO.
     pub fn view(&self) -> &View {
         &self.view
@@ -249,7 +452,75 @@ impl Browser {
         }
         self.last_request = request_id;
         match command {
+            Command::Search(query) => {
+                if query.is_empty() || query.len() > 4096 || self.locations.is_empty() {
+                    return Err(EngineError("Open a folder and enter a search query (up to 4096 bytes)".into()));
+                }
+                self.start_listing(self.locations.clone(), self.view.collection, Some(query))
+            }
+            Command::Expand(id) => self.expand(id),
+            Command::DismissRecovery => {
+                self.recovery_preview = None;
+                Ok(())
+            }
+            Command::Launch(id) => {
+                let entry =
+                    self.entry(&id).cloned().ok_or_else(|| EngineError("Selected file is no longer visible".into()))?;
+                let source = self.source(id.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+                let program = self
+                    .library
+                    .openers
+                    .program(id.path.as_path())
+                    .ok_or_else(|| {
+                        EngineError("Configure an application for this file type in Preferences → Applications".into())
+                    })?
+                    .to_owned();
+                self.action(Action::Launch(source, entry, program))
+            }
+            Command::PreviewRecovery(id) => {
+                self.recovery_preview = None;
+                let entry =
+                    self.entry(&id).cloned().ok_or_else(|| EngineError("Selected item is no longer visible".into()))?;
+                if self.view.collection.is_some() && !self.view.search && entry.kind == EntryKind::Directory {
+                    return Err(EngineError(
+                        "Virtual folders cannot be deleted. Browse and select an explicit physical location first."
+                            .into(),
+                    ));
+                }
+                let source = self.source(id.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+                let policy = self.policy(id.source)?.clone();
+                policy.permits(&id.path, entry.kind).map_err(EngineError)?;
+                self.action(Action::Prepare(request_id, source, entry, policy, self.guards()))
+            }
+            Command::ConfirmRecovery(id) => {
+                let plan = self
+                    .recovery_preview
+                    .take()
+                    .filter(|p| p.id == id)
+                    .ok_or_else(|| EngineError("Recovery preview expired; prepare it again".into()))?;
+                self.action(Action::Recover(plan))
+            }
+            Command::ListRecovery(id) => {
+                let source = self.source(id).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+                self.action(Action::List(source))
+            }
+            Command::Restore(id, job) => {
+                if !self
+                    .recovery_records
+                    .as_ref()
+                    .is_some_and(|(source, records)| *source == id && records.iter().any(|r| r.id == job))
+                {
+                    return Err(EngineError("Inspect Recovery and select a current record first".into()));
+                }
+                let source = self.source(id).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+                let policy = self.policy(id)?.clone();
+                self.action(Action::Restore(source, policy, job, self.guards()))
+            }
             Command::SaveLibrary(settings) => {
+                if self.operation_pending {
+                    return Err(EngineError("Wait for the current operation before changing settings".into()));
+                }
+                self.recovery_preview = None;
                 settings.validate().map_err(EngineError)?;
                 if self.settings_pending {
                     return Err(EngineError("A settings save is already pending".into()));
@@ -261,6 +532,9 @@ impl Browser {
                 let job = Job {
                     generation: 0,
                     requests: Vec::new(),
+                    node: None,
+                    action: None,
+                    search: None,
                     save: Some((path, settings)),
                     cancel: Arc::new(AtomicBool::new(false)),
                 };
@@ -298,44 +572,39 @@ impl Browser {
                     self.navigate(Location { source: location.source, path })
                 }
             }
-            Command::AddSource(root) => {
-                if !root.is_absolute() {
-                    return Err(EngineError("Choose an absolute folder path".into()));
+            Command::AddSource(root) => self.add_source(root),
+            Command::BrowsePath(path) => {
+                if !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+                    return Err(EngineError("Use an absolute address without parent traversal".into()));
                 }
-                let existing = self.sources.iter().find(|source| source.root == root).map(|source| source.id);
-                let id = if let Some(id) = existing {
-                    id
+                if let Some(source) = self
+                    .sources
+                    .iter()
+                    .filter(|s| path.starts_with(&s.root))
+                    .max_by_key(|s| s.root.components().count())
+                {
+                    let relative = path.strip_prefix(&source.root).map_err(|e| EngineError(e.to_string()))?;
+                    self.navigate(Location {
+                        source: source.id,
+                        path: RelativePath::new(relative).map_err(|e| EngineError(e.to_string()))?,
+                    })
                 } else {
-                    if self.sources.len() >= 32 {
-                        return Err(EngineError("This session supports up to 32 sources".into()));
-                    }
-                    let id = SourceId(self.next_source);
-                    self.next_source = self
-                        .next_source
-                        .checked_add(1)
-                        .ok_or_else(|| EngineError("Source identity limit reached".into()))?;
-                    let label = display_name(root.file_name().unwrap_or(root.as_os_str()));
-                    self.sources.push(Source { id, root, label, nfs_remote: None });
-                    id
-                };
-                self.navigate(Location { source: id, path: RelativePath::default() })
+                    self.add_source(path)
+                }
             }
             Command::Navigate(location) => self.navigate(location),
             Command::Open(id) => {
-                let entry =
-                    self.view.entries.iter().find(|entry| entry.id == id).ok_or_else(|| {
-                        EngineError("The selected entry is no longer in this view; refresh it".into())
-                    })?;
+                let entry = self
+                    .entry(&id)
+                    .ok_or_else(|| EngineError("The selected entry is no longer in this view; refresh it".into()))?;
                 if entry.kind != EntryKind::Directory {
                     return Err(EngineError(
                         "Only real folders can be opened in this version; links are not followed".into(),
                     ));
                 }
-                if let Some(collection) = self.view.collection {
+                if let Some(collection) = self.view.collection.filter(|_| !self.view.search) {
                     let ids = self
-                        .view
-                        .contributors
-                        .get(&id)
+                        .contributors(&id)
                         .cloned()
                         .ok_or_else(|| EngineError("Folder contributors unavailable".into()))?;
                     let locations = ids.into_iter().map(|id| Location { source: id.source, path: id.path }).collect();
@@ -362,13 +631,38 @@ impl Browser {
                 }
                 if self.view.phase == Phase::Loading {
                     self.view.phase = Phase::Cancelled;
-                    self.bump_revision();
                 }
+                for branch in self.branches.values_mut() {
+                    if branch.view.phase == Phase::Loading {
+                        branch.view.phase = Phase::Cancelled;
+                    }
+                }
+                self.bump_revision();
                 Ok(())
             }
         }
     }
 
+    fn add_source(&mut self, root: PathBuf) -> Result<(), EngineError> {
+        if !root.is_absolute() || root.components().any(|c| c.as_os_str() == archiv_core::actions::RECOVERY_DIR) {
+            return Err(EngineError("Choose an absolute folder path".into()));
+        }
+        let existing = self.sources.iter().find(|source| source.root == root).map(|source| source.id);
+        let id = if let Some(id) = existing {
+            id
+        } else {
+            if self.sources.len() >= 32 {
+                return Err(EngineError("This session supports up to 32 sources".into()));
+            }
+            let id = SourceId(self.next_source);
+            self.next_source =
+                self.next_source.checked_add(1).ok_or_else(|| EngineError("Source identity limit reached".into()))?;
+            let label = display_name(root.file_name().unwrap_or(root.as_os_str()));
+            self.sources.push(Source { id, root, label, nfs_remote: None });
+            id
+        };
+        self.navigate(Location { source: id, path: RelativePath::default() })
+    }
     fn navigate(&mut self, location: Location) -> Result<(), EngineError> {
         self.start(vec![location], None)?;
         self.history.clear();
@@ -376,6 +670,14 @@ impl Browser {
     }
 
     fn start(&mut self, locations: Vec<Location>, collection: Option<u64>) -> Result<(), EngineError> {
+        self.start_listing(locations, collection, None)
+    }
+    fn start_listing(
+        &mut self,
+        locations: Vec<Location>,
+        collection: Option<u64>,
+        search: Option<String>,
+    ) -> Result<(), EngineError> {
         let requests: Result<Vec<_>, _> = locations
             .iter()
             .map(|location| {
@@ -387,7 +689,15 @@ impl Browser {
         let generation =
             self.generation.checked_add(1).ok_or_else(|| EngineError("Request generation limit reached".into()))?;
         let cancel = Arc::new(AtomicBool::new(false));
-        let job = Job { generation, requests: requests?, save: None, cancel: Arc::clone(&cancel) };
+        let job = Job {
+            generation,
+            requests: requests?,
+            node: None,
+            action: None,
+            search: search.clone(),
+            save: None,
+            cancel: Arc::clone(&cancel),
+        };
         let sender = self.jobs.as_ref().ok_or_else(|| EngineError("Directory workers have stopped".into()))?;
         sender.try_send(job).map_err(|error| match error {
             mpsc::TrySendError::Full(_) => {
@@ -400,7 +710,10 @@ impl Browser {
         }
         self.generation = generation;
         self.view.location = if collection.is_none() { locations.first().cloned() } else { None };
-        self.pending = locations.len();
+        self.view.search = search.is_some();
+        self.view.pending = if search.is_some() { 1 } else { locations.len() };
+        self.branches.clear();
+        self.recovery_preview = None;
         self.locations = locations;
         self.view.collection = collection;
         self.view.contributors.clear();
@@ -416,6 +729,43 @@ impl Browser {
     pub fn poll(&mut self) -> bool {
         for _ in 0..64 {
             let Ok(event) = self.events.try_recv() else { return false };
+            if let Update::BackgroundError(error) = event.result {
+                self.operation_status = Some(error);
+                self.bump_revision();
+                continue;
+            }
+            if let Update::Action(result) = event.result {
+                self.operation_pending = false;
+                match result {
+                    Ok(ActionResult::Preview(plan)) if event.generation == self.generation => {
+                        self.recovery_preview = Some(*plan);
+                        self.operation_status = None;
+                    }
+                    Ok(ActionResult::Preview(_)) => {
+                        self.operation_status = Some("Preview expired after navigation".into())
+                    }
+                    Ok(ActionResult::Changed(message)) => {
+                        self.operation_status = Some(message);
+                        self.recovery_records = None;
+                        if !self.locations.is_empty()
+                            && let Err(error) = self.start(self.locations.clone(), self.view.collection)
+                        {
+                            self.operation_status = Some(format!("Operation completed; refresh needed: {error}"));
+                        }
+                    }
+                    Ok(ActionResult::Done(message)) => {
+                        self.operation_status = Some(message);
+                        self.recovery_records = None;
+                    }
+                    Ok(ActionResult::Records(source, records)) => {
+                        self.recovery_records = Some((source, records));
+                        self.operation_status = None;
+                    }
+                    Err(error) => self.operation_status = Some(error),
+                }
+                self.bump_revision();
+                continue;
+            }
             if let Update::Saved(result) = event.result {
                 self.settings_pending = false;
                 match result {
@@ -424,6 +774,9 @@ impl Browser {
                         if let Some(cancel) = &self.cancel {
                             cancel.store(true, Ordering::Release);
                         }
+                        self.branches.clear();
+                        self.recovery_preview = None;
+                        self.recovery_records = None;
                         self.view.phase = Phase::Idle;
                         self.view.location = None;
                         self.view.collection = None;
@@ -450,39 +803,54 @@ impl Browser {
             if self.view.phase == Phase::Cancelled {
                 continue;
             }
+            let total = self
+                .view
+                .entries
+                .len()
+                .saturating_add(self.branches.values().map(|b| b.view.entries.len()).sum::<usize>());
+            let remaining = archiv_platform::MAX_ENTRIES.saturating_sub(total);
+            let view = if let Some(node) = &event.node {
+                let Some(branch) = self.branches.get_mut(node) else { continue };
+                &mut branch.view
+            } else {
+                &mut self.view
+            };
+            if view.phase == Phase::Cancelled {
+                continue;
+            }
             match event.result {
                 Update::Batch(batch) => {
-                    let room = archiv_platform::MAX_ENTRIES.saturating_sub(self.view.entries.len());
+                    let room = remaining;
                     if batch.len() > room {
-                        self.view.summary.get_or_insert_with(ReadSummary::default).truncated = true;
+                        view.summary.get_or_insert_with(ReadSummary::default).truncated = true;
                     }
-                    self.view.entries.extend(batch.into_iter().take(room));
+                    view.entries.extend(batch.into_iter().take(room));
                 }
                 Update::Discard(location) => {
-                    self.view.entries.retain(|e| {
+                    view.entries.retain(|e| {
                         e.id.source != location.source || e.id.path.parent().as_ref() != Some(&location.path)
                     });
                 }
                 Update::Finished(result) => {
-                    self.pending = self.pending.saturating_sub(1);
+                    view.pending = view.pending.saturating_sub(1);
                     match result {
                         Ok(summary) => {
-                            let total = self.view.summary.get_or_insert_with(ReadSummary::default);
+                            let total = view.summary.get_or_insert_with(ReadSummary::default);
                             total.entries = total.entries.saturating_add(summary.entries);
                             total.skipped = total.skipped.saturating_add(summary.skipped);
                             total.truncated |= summary.truncated;
                             total.cancelled |= summary.cancelled;
                         }
-                        Err(error) => self.view.errors.push(error),
+                        Err(error) => view.errors.push(error),
                     }
-                    if self.pending == 0 {
-                        sort_entries(&mut self.view.entries);
-                        if self.view.collection.is_some() {
-                            self.view.contributors = merge_directories(&mut self.view.entries);
+                    if view.pending == 0 {
+                        sort_entries(&mut view.entries);
+                        if view.collection.is_some() && !view.search {
+                            view.contributors = merge_directories(&mut view.entries);
                         }
-                        self.view.phase = if self.view.summary.as_ref().is_some_and(|s| s.cancelled) {
+                        view.phase = if view.summary.as_ref().is_some_and(|s| s.cancelled) {
                             Phase::Cancelled
-                        } else if self.view.errors.is_empty() {
+                        } else if view.errors.is_empty() {
                             Phase::Ready
                         } else {
                             Phase::Failed(
@@ -491,11 +859,191 @@ impl Browser {
                         };
                     }
                 }
-                Update::Saved(_) => {}
+                Update::Saved(_) | Update::Action(_) | Update::BackgroundError(_) => {}
             }
             self.bump_revision();
         }
         true
+    }
+
+    /// Lookup a visible or lazily loaded physical entry by its stable identity.
+    pub fn entry(&self, id: &EntryId) -> Option<&Entry> {
+        self.view.entries.iter().chain(self.branches.values().flat_map(|b| b.view.entries.iter())).find(|e| &e.id == id)
+    }
+    /// Every contributing directory for a virtual row.
+    pub fn contributors(&self, id: &EntryId) -> Option<&Vec<EntryId>> {
+        self.view.contributors.get(id).or_else(|| self.branches.values().find_map(|b| b.view.contributors.get(id)))
+    }
+    /// Lazily loaded inline directory, if requested.
+    pub fn branch(&self, id: &EntryId) -> Option<&Branch> {
+        self.branches.get(id)
+    }
+    /// Background operation progress and failures.
+    pub fn operation_status(&self) -> Option<&str> {
+        self.operation_status.as_deref()
+    }
+    /// A single bounded operation is in progress.
+    pub fn operation_pending(&self) -> bool {
+        self.operation_pending
+    }
+    /// Single-use recovery preview.
+    pub fn recovery_preview(&self) -> Option<&RecoveryPlan> {
+        self.recovery_preview.as_ref()
+    }
+    /// Explicitly inspected recovery records.
+    pub fn recovery_records(&self) -> Option<&(SourceId, Vec<RecoveryRecord>)> {
+        self.recovery_records.as_ref()
+    }
+    /// Shared availability explanation used by menus, shortcuts and direct engine calls.
+    pub fn recovery_availability(&self, id: &EntryId) -> Result<(), String> {
+        let entry = self.entry(id).ok_or("Item is no longer in this view")?;
+        if self.view.collection.is_some() && !self.view.search && entry.kind == EntryKind::Directory {
+            return Err("Virtual folders have no delete target. Open an explicit physical source first.".into());
+        }
+        self.policy(id.source).map_err(|e| e.to_string())?.permits(&id.path, entry.kind)
+    }
+    fn guards(&self) -> Vec<(Source, ProtectedPath)> {
+        let mut guards = Vec::new();
+        for source in &self.library.sources {
+            guards.push((source.clone(), ProtectedPath { path: RelativePath::default(), subtree: false }));
+            if let Some(policy) = self.library.recovery.iter().find(|p| p.source == source.id) {
+                for protected in &policy.protected {
+                    guards.push((source.clone(), protected.clone()));
+                }
+            }
+        }
+        for member in self.library.collections.iter().flat_map(|c| c.members.iter()) {
+            if let Some(source) = self.source(member.source) {
+                guards.push((source.clone(), ProtectedPath { path: member.path.clone(), subtree: false }));
+            }
+        }
+        guards
+    }
+    fn policy(&self, source: SourceId) -> Result<&RecoveryPolicy, EngineError> {
+        self.library
+            .recovery
+            .iter()
+            .find(|p| p.source == source)
+            .ok_or_else(|| EngineError("Configure recovery permissions in Preferences → Safeguards first".into()))
+    }
+    fn action(&mut self, action: Action) -> Result<(), EngineError> {
+        if self.operation_pending || self.settings_pending {
+            return Err(EngineError("Wait for the current operation/settings save".into()));
+        }
+        let job = Job {
+            generation: self.generation,
+            node: None,
+            action: Some(action),
+            search: None,
+            requests: Vec::new(),
+            save: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| EngineError("Workers stopped".into()))?
+            .try_send(job)
+            .map_err(|_| EngineError("Workers busy; try again shortly".into()))?;
+        self.operation_pending = true;
+        self.operation_status = Some("Working…".into());
+        Ok(())
+    }
+    fn expand(&mut self, id: EntryId) -> Result<(), EngineError> {
+        if let Some(branch) = self.branches.get_mut(&id) {
+            branch.expanded = !branch.expanded;
+            self.bump_revision();
+            return Ok(());
+        }
+        if self.branches.len() >= 32 || id.path.as_path().components().count() >= 64 {
+            return Err(EngineError("Inline expansion limit reached; open the folder to continue".into()));
+        }
+        let entry = self.entry(&id).ok_or_else(|| EngineError("Folder is no longer visible".into()))?;
+        if entry.kind != EntryKind::Directory {
+            return Err(EngineError("Only folders can expand".into()));
+        }
+        if self.view.collection.is_some() && !self.view.search && self.contributors(&id).is_none() {
+            return Err(EngineError("Wait for the collection folder listing before expanding it".into()));
+        }
+        let ids = self.contributors(&id).cloned().unwrap_or_else(|| vec![id.clone()]);
+        let requests: Result<Vec<_>, _> = ids
+            .iter()
+            .map(|id| {
+                Ok(ReadRequest {
+                    source: self.source(id.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?,
+                    path: id.path.clone(),
+                })
+            })
+            .collect();
+        if self.cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
+            return Err(EngineError("Scan was cancelled; refresh before expanding more folders".into()));
+        }
+        let requests = requests?;
+        let pending = requests.len();
+        let job = Job {
+            generation: self.generation,
+            node: Some(id.clone()),
+            action: None,
+            search: None,
+            requests,
+            save: None,
+            cancel: self.cancel.clone().unwrap_or_else(|| Arc::new(AtomicBool::new(false))),
+        };
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| EngineError("Workers stopped".into()))?
+            .try_send(job)
+            .map_err(|_| EngineError("Workers busy; retry expansion shortly".into()))?;
+        self.branches.insert(
+            id,
+            Branch {
+                expanded: true,
+                view: View {
+                    location: None,
+                    entries: Vec::new(),
+                    collection: if self.view.search { None } else { self.view.collection },
+                    contributors: HashMap::new(),
+                    errors: Vec::new(),
+                    phase: Phase::Loading,
+                    summary: None,
+                    search: false,
+                    revision: 0,
+                    pending,
+                },
+            },
+        );
+        self.bump_revision();
+        Ok(())
+    }
+    /// Flatten expanded directories in display order. Search filters cached/expanded names only.
+    pub fn rows(&self, query: &str, hidden: bool) -> Vec<(EntryId, usize)> {
+        fn visit(
+            browser: &Browser,
+            entries: &[Entry],
+            depth: usize,
+            query: &str,
+            hidden: bool,
+            rows: &mut Vec<(EntryId, usize)>,
+        ) {
+            if depth >= 64 {
+                return;
+            }
+            for entry in entries {
+                let label = display_name(&entry.name);
+                if !hidden && label.starts_with('.') {
+                    continue;
+                }
+                let start = rows.len();
+                if let Some(branch) = browser.branch(&entry.id).filter(|b| b.expanded) {
+                    visit(browser, &branch.view.entries, depth.saturating_add(1), query, hidden, rows);
+                }
+                if label.to_lowercase().contains(query) || rows.len() > start {
+                    rows.insert(start, (entry.id.clone(), depth));
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        visit(self, &self.view.entries, 0, &query.to_lowercase(), hidden, &mut rows);
+        rows
     }
 
     fn bump_revision(&mut self) {
@@ -571,6 +1119,8 @@ mod tests {
     fn fixture_library(root: &std::path::Path) -> LibrarySettings {
         LibrarySettings {
             version: 1,
+            openers: Default::default(),
+            recovery: Vec::new(),
             sources: (1..=4)
                 .map(|id| Source {
                     id: SourceId(id),
@@ -587,6 +1137,132 @@ mod tests {
                     .collect(),
             }],
         }
+    }
+
+    fn settle_all(browser: &mut Browser) {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            browser.poll();
+            if !browser.operation_pending()
+                && !browser.settings_pending()
+                && browser.view.phase != Phase::Loading
+                && !browser.branches.values().any(|b| b.view.phase == Phase::Loading)
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "workers did not settle");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn address_navigation_preserves_registered_source_identity_and_rejects_traversal() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(fixture.path().join("one/two")).unwrap();
+        let mut browser = browser();
+        browser.execute(1, Command::AddSource(fixture.path().to_owned())).unwrap();
+        settle_all(&mut browser);
+        browser.execute(2, Command::BrowsePath(fixture.path().join("one/two"))).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.sources.len(), 1);
+        assert_eq!(browser.view.location.as_ref().unwrap().source, SourceId(1));
+        assert_eq!(browser.view.location.as_ref().unwrap().path.as_path(), std::path::Path::new("one/two"));
+        assert!(browser.execute(3, Command::BrowsePath(fixture.path().join("../outside"))).is_err());
+    }
+    #[test]
+    fn inline_expansion_is_lazy_merged_and_cancelled_by_new_navigation() {
+        let root = tempfile::tempdir().unwrap();
+        for id in 1..=4 {
+            std::fs::create_dir_all(root.path().join(format!("disk{id}/movies/Title/Extras"))).unwrap();
+            std::fs::write(root.path().join(format!("disk{id}/movies/Title/file.txt")), b"safe").unwrap();
+        }
+        let mut browser = browser();
+        browser.configure(fixture_library(root.path()), root.path().join("library.json")).unwrap();
+        browser.execute(1, Command::BrowseCollection(1)).unwrap();
+        settle_all(&mut browser);
+        let title = browser.view.entries[0].id.clone();
+        assert_eq!(browser.rows("", false).len(), 1);
+        browser.execute(2, Command::Expand(title.clone())).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.rows("", false).len(), 6);
+        assert_eq!(browser.rows("file", false).len(), 5); // parent plus four physical files
+        assert!(browser.execute(3, Command::PreviewRecovery(title.clone())).is_err());
+        browser.execute(4, Command::Expand(title.clone())).unwrap();
+        assert_eq!(browser.rows("", false).len(), 1);
+        browser.execute(5, Command::Expand(title)).unwrap();
+        assert_eq!(browser.rows("", false).len(), 6);
+        browser.execute(6, Command::Navigate(Location { source: SourceId(1), path: RelativePath::default() })).unwrap();
+        settle_all(&mut browser);
+        assert!(browser.branches.is_empty());
+    }
+    #[test]
+    fn explicit_recursive_search_preserves_same_name_hits_at_different_depths() {
+        let root = tempfile::tempdir().unwrap();
+        for folder in ["one", "two/deep"] {
+            std::fs::create_dir_all(root.path().join(folder)).unwrap();
+            std::fs::write(root.path().join(folder).join("match.txt"), b"safe").unwrap();
+        }
+        let mut browser = browser();
+        browser.execute(1, Command::AddSource(root.path().to_owned())).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.filtered_indices("match", false).len(), 0);
+        browser.execute(2, Command::Search("match".into())).unwrap();
+        settle_all(&mut browser);
+        assert!(browser.view.search);
+        assert_eq!(browser.view.entries.len(), 2);
+        assert_ne!(browser.view.entries[0].id, browser.view.entries[1].id);
+        browser.execute(3, Command::Refresh).unwrap();
+        settle_all(&mut browser);
+        assert!(!browser.view.search);
+    }
+    #[test]
+    fn recovery_requires_policy_preview_and_single_use_confirmation_and_restores() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(fixture.path().join("media/Title")).unwrap();
+        std::fs::write(fixture.path().join("media/Title/file.txt"), b"safe").unwrap();
+        let source =
+            Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+        let mut config = LibrarySettings { sources: vec![source], ..Default::default() };
+        let mut browser = browser();
+        browser.configure(config.clone(), fixture.path().join("config/library.json")).unwrap();
+        browser.execute(1, Command::AddSource(fixture.path().to_owned())).unwrap();
+        settle_all(&mut browser);
+        let media = browser.view.entries[0].id.clone();
+        assert!(browser.execute(2, Command::PreviewRecovery(media.clone())).is_err());
+        config.recovery.push(RecoveryPolicy {
+            source: SourceId(1),
+            enabled: true,
+            allowed: vec![RelativePath::default()],
+            protected: vec![ProtectedPath { path: RelativePath::new("media").unwrap(), subtree: false }],
+        });
+        browser.execute(3, Command::SaveLibrary(config.clone())).unwrap();
+        settle_all(&mut browser);
+        browser
+            .execute(4, Command::Navigate(Location { source: SourceId(1), path: RelativePath::new("media").unwrap() }))
+            .unwrap();
+        settle_all(&mut browser);
+        let title = browser.view.entries[0].id.clone();
+        browser.execute(5, Command::PreviewRecovery(title.clone())).unwrap();
+        settle_all(&mut browser);
+        assert!(fixture.path().join("media/Title").exists());
+        let id = browser.recovery_preview().unwrap().id;
+        browser.execute(6, Command::ConfirmRecovery(id)).unwrap();
+        assert!(browser.execute(7, Command::ConfirmRecovery(id)).is_err());
+        settle_all(&mut browser);
+        assert!(!fixture.path().join("media/Title").exists());
+        browser.execute(8, Command::ListRecovery(SourceId(1))).unwrap();
+        settle_all(&mut browser);
+        let job = browser.recovery_records().unwrap().1[0].id.clone();
+        browser.execute(9, Command::Restore(SourceId(1), job)).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(std::fs::read(fixture.path().join("media/Title/file.txt")).unwrap(), b"safe");
+        let title = browser.view.entries[0].id.clone();
+        browser.execute(10, Command::PreviewRecovery(title)).unwrap();
+        settle_all(&mut browser);
+        let id = browser.recovery_preview().unwrap().id;
+        browser.execute(11, Command::SaveLibrary(config)).unwrap();
+        assert!(browser.execute(12, Command::ConfirmRecovery(id)).is_err());
+        settle_all(&mut browser);
+        assert!(fixture.path().join("media/Title").exists());
     }
 
     #[test]
@@ -748,11 +1424,13 @@ mod tests {
         browser.events = receiver;
         browser.generation = 9;
         browser.view.phase = Phase::Loading;
-        sender.send(Event { generation: 8, result: Update::Finished(Err("obsolete failure".into())) }).unwrap();
+        sender
+            .send(Event { generation: 8, node: None, result: Update::Finished(Err("obsolete failure".into())) })
+            .unwrap();
         browser.poll();
         assert_eq!(browser.view.phase, Phase::Loading);
         browser.execute(1, Command::Cancel).unwrap();
-        sender.send(Event { generation: 9, result: Update::Finished(Ok(ReadSummary::default())) }).unwrap();
+        sender.send(Event { generation: 9, node: None, result: Update::Finished(Ok(ReadSummary::default())) }).unwrap();
         browser.poll();
         assert_eq!(browser.view.phase, Phase::Cancelled);
     }

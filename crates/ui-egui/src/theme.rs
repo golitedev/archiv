@@ -45,6 +45,10 @@ pub struct Tokens {
     pub selected: Color32,
     pub accent: Color32,
     pub field: Color32,
+    pub folder: Color32,
+    pub image: Color32,
+    pub media: Color32,
+    pub document: Color32,
 }
 impl Tokens {
     pub fn new(dark: bool) -> Self {
@@ -62,6 +66,10 @@ impl Tokens {
                 selected: rgb(36, 54, 87),
                 accent: rgb(75, 139, 245),
                 field: rgb(30, 30, 34),
+                folder: rgb(75, 139, 245),
+                image: rgb(235, 95, 173),
+                media: rgb(166, 112, 245),
+                document: rgb(70, 190, 140),
             }
         } else {
             Self {
@@ -76,6 +84,10 @@ impl Tokens {
                 selected: rgb(227, 236, 253),
                 accent: rgb(27, 99, 224),
                 field: Color32::WHITE,
+                folder: rgb(27, 99, 224),
+                image: rgb(184, 40, 112),
+                media: rgb(122, 62, 202),
+                document: rgb(24, 133, 91),
             }
         }
     }

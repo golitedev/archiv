@@ -10,8 +10,8 @@ These rules define Archiv's engineering, interface and data-safety requirements.
   Rust owns product code and build tooling; no handwritten JS/TS, Electron or webview frontend.
 - Use maintained egui/eframe releases for the UI. Toolkit forks and vendored patches require
   a documented need; do not add them as part of routine scaffolding.
-- Current milestone is **M1: native shell and read-only local browsing**. Follow the user's
-  requested slice; NAS integration, transfers and mutation remain separate milestones.
+- Native browsing, optional mounted-source collections and opt-in recovery slices are implemented.
+  Follow the user's requested slice; ROADMAP tracks remaining UI, NFS acceptance and transfer work.
   Never present planned behavior as shipped. Update ROADMAP honestly.
 - Never run development experiments on the user's real NAS library. Use temporary synthetic
   trees. Do not change NAS ownership, permissions, mounts, exports, services or contents unless

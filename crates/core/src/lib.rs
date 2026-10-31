@@ -1,5 +1,6 @@
 //! Byte-preserving identities and read-only browsing models. No IO or GUI dependencies.
 
+pub mod actions;
 pub mod library;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +9,7 @@ use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
-/// Identity of an explicitly registered source in this session.
+/// Identity of a saved or explicitly registered physical source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceId(pub u64);
 
@@ -109,7 +110,7 @@ pub struct EntryId {
 pub enum EntryKind {
     /// Real directory, eligible for read-only navigation.
     Directory,
-    /// Regular file; no application launch is performed yet.
+    /// Regular file; application launching is an explicit engine action.
     File,
     /// Symbolic link, displayed but never traversed.
     Symlink,
@@ -143,6 +144,8 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     /// Observed Unix mode including file type bits.
     pub mode: u32,
+    /// Snapshot for stale-target checks.
+    pub identity: actions::FileIdentity,
 }
 
 /// Escape control characters for a single-line label; never use the result as an operation path.

@@ -5,8 +5,8 @@ No font binary is committed to this repository or downloaded by Archiv at runtim
 
 The first UI uses egui's default fonts while Inter/JetBrains Mono build inputs are deferred.
 The renderer therefore follows the documented layout and colors but does not yet match the target
-typography. No Unicode/emoji symbols are used as application action icons. Lucide assets are not
-bundled yet; controls use text labels. The dependency's private-use icon font is included by its
+typography. No Unicode/emoji symbols are used as application action icons. Pinned Lucide SVGs now provide meaningful tinted folder/file-type icons alongside text controls;
+[icon provenance, hashes and terms](../assets/icons/README.md) are recorded beside the assets. The dependency's private-use icon font is included by its
 normal font configuration, not used for Archiv branding.
 
 Source: [epaint_default_fonts 0.37.0](https://docs.rs/crate/epaint_default_fonts/0.37.0/source/fonts/),

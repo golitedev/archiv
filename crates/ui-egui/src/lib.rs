@@ -1,26 +1,26 @@
-//! Native read-only desktop browsing. Widgets dispatch the same headless engine commands.
-
+//! Native configurable file manager. Rendering dispatches typed, deduplicated engine commands.
 mod settings;
 mod theme;
-pub use theme::ThemePreference;
-
-use archiv_core::{EntryId, EntryKind, Location, RelativePath, display_name};
+mod widgets;
+use archiv_core::{EntryId, EntryKind, Location, RelativePath, SourceId, display_name};
 use archiv_engine::{Browser, Command, FrameCommands, Phase};
 use egui::RichText;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+pub use theme::ThemePreference;
 
-/// Presentation preferences only; explicit library definitions have a separate atomic store.
+/// Presentation preferences; source definitions and permissions use the atomic library store.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
-    /// System, light or dark appearance.
+    /// Follow desktop or use a fixed theme.
     pub theme: ThemePreference,
-    /// Disable optional animation. Desktop motion integration is deferred.
+    /// Disable optional animation.
     pub reduced_motion: bool,
+    /// Manual percentage relative to native desktop scale; None follows the desktop.
+    pub scale: Option<u16>,
 }
-
-/// Desktop shell backed by a read-only engine; it exposes no mutation controls.
+/// Native shell; all filesystem and process effects are admitted by its engine.
 pub struct ArchivApp {
     browser: Browser,
     commands: FrameCommands,
@@ -28,456 +28,768 @@ pub struct ArchivApp {
     query: String,
     show_hidden: bool,
     selected: Option<EntryId>,
-    filtered: Vec<usize>,
-    filter_key: Option<(u64, String, bool)>,
     add_source: bool,
     source_input: String,
     focus_source: bool,
     error: Option<String>,
     settings: Option<settings::Editor>,
+    recovery: bool,
+    recovery_source: Option<SourceId>,
+    restore_choice: Option<(SourceId, String, String)>,
+    about: bool,
+    rows: Vec<(EntryId, usize)>,
+    row_key: Option<(u64, String, bool)>,
+    close_after_save: bool,
+    focused_preview: Option<u64>,
+    location_input: String,
+    edit_location: bool,
+    focus_location: bool,
 }
-
 impl ArchivApp {
-    /// Assemble a UI with an existing engine. Startup performs no implicit scans.
+    /// Assemble without scanning any implicit source.
     pub fn new(browser: Browser, preferences: Preferences) -> Self {
         Self {
             browser,
-            commands: FrameCommands::default(),
+            commands: Default::default(),
             preferences,
             query: String::new(),
             show_hidden: false,
             selected: None,
-            filtered: Vec::new(),
-            filter_key: None,
             add_source: false,
             source_input: String::new(),
             focus_source: false,
             error: None,
             settings: None,
+            recovery: false,
+            recovery_source: None,
+            restore_choice: None,
+            about: false,
+            rows: Vec::new(),
+            row_key: None,
+            close_after_save: false,
+            focused_preview: None,
+            location_input: String::new(),
+            edit_location: false,
+            focus_location: false,
         }
     }
-
-    /// Read the underlying engine for tests/headless inspection.
+    /// Headless engine inspection for tests.
     pub fn browser(&self) -> &Browser {
         &self.browser
     }
-
-    /// Dispatch a startup source through the same route as the Open folder dialog.
+    /// Explicit startup navigation, using the shared dispatch path.
     pub fn open_source(&mut self, frame: u64, path: PathBuf) {
         self.dispatch(frame, Command::AddSource(path));
     }
-
     fn dispatch(&mut self, frame: u64, command: Command) {
-        let navigation = !matches!(command, Command::Cancel);
-        let new_location = matches!(
+        let searching = matches!(&command, Command::Search(_));
+        let navigation = matches!(
             command,
             Command::AddSource(_)
+                | Command::BrowsePath(_)
                 | Command::Navigate(_)
-                | Command::Open(_)
                 | Command::BrowseCollection(_)
+                | Command::Open(_)
                 | Command::Up
+                | Command::Refresh
+                | Command::Search(_)
         );
         match self.commands.dispatch(frame, command, &mut self.browser) {
             Ok(()) => {
                 self.error = None;
-                if new_location {
-                    self.query.clear();
-                }
                 if navigation {
+                    if !searching {
+                        self.query.clear();
+                    }
                     self.selected = None;
                 }
             }
-            Err(error) => self.error = Some(error.to_string()),
+            Err(error) => {
+                self.error = Some(error.to_string());
+                self.close_after_save = false;
+            }
         }
     }
-
     fn open_dialog(&mut self) {
         self.add_source = true;
         self.focus_source = true;
     }
-
-    fn parent_command(&self) -> Option<Command> {
-        self.browser.can_up().then_some(Command::Up)
-    }
-
-    fn update_filter(&mut self) {
-        let key = (self.browser.view().revision(), self.query.clone(), self.show_hidden);
-        if self.filter_key.as_ref() != Some(&key) {
-            self.filtered = self.browser.filtered_indices(&self.query, self.show_hidden);
-            self.filter_key = Some(key);
+    fn edit_address(&mut self) {
+        let physical = self.browser.view().location.as_ref().and_then(|location| {
+            self.browser.source(location.source).map(|source| source.root.join(location.path.as_path()))
+        });
+        if let Some(path) = physical {
+            if let Some(text) = path.to_str() {
+                self.location_input = text.to_owned();
+            } else {
+                self.error = Some(
+                    "This path contains non-UTF-8 bytes; use folder navigation instead of editing its display label."
+                        .into(),
+                );
+                return;
+            }
+        } else {
+            self.location_input.clear();
         }
-        if let Some(selected) = &self.selected
-            && !self.browser.view().entries.iter().any(|entry| &entry.id == selected)
-        {
+        self.edit_location = true;
+        self.focus_location = true;
+    }
+    fn open_command(&self) -> Option<Command> {
+        let id = self.selected.as_ref()?;
+        let entry = self.browser.entry(id)?;
+        match entry.kind {
+            EntryKind::Directory => Some(Command::Open(id.clone())),
+            EntryKind::File => Some(Command::Launch(id.clone())),
+            _ => None,
+        }
+    }
+    fn refresh_rows(&mut self) {
+        let key = (self.browser.view().revision(), self.query.clone(), self.show_hidden);
+        if self.row_key.as_ref() != Some(&key) {
+            self.rows = self.browser.rows(&self.query, self.show_hidden);
+            self.row_key = Some(key);
+        }
+        if self.selected.as_ref().is_some_and(|id| !self.rows.iter().any(|(visible, _)| visible == id)) {
             self.selected = None;
         }
     }
-
-    /// Draw the native interface. This method only reads engine snapshots and queues commands.
+    /// Draw only cached state. Commands enter bounded engine workers after rendering.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let frame = ctx.cumulative_frame_nr();
-        let t = theme::apply(&ctx, self.preferences.theme, self.preferences.reduced_motion);
-        self.update_filter();
-        let mut command = None;
-        if self.settings.is_none() && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
-            self.open_dialog();
+        egui_extras::install_image_loaders(&ctx);
+        ctx.set_zoom_factor(self.preferences.scale.map_or(1.0, |s| f32::from(s.clamp(75, 200)) / 100.0));
+        if self.close_after_save && !self.browser.settings_pending() {
+            if self.browser.settings_status().is_some_and(|s| s.starts_with("Library settings saved")) {
+                self.settings = None;
+            }
+            self.close_after_save = false;
         }
-        if !self.add_source && self.settings.is_none() {
-            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
+        let t = theme::apply(&ctx, self.preferences.theme, self.preferences.reduced_motion);
+        let frame = ctx.cumulative_frame_nr();
+        self.refresh_rows();
+        let mut command = None;
+        let modal = self.add_source
+            || self.settings.is_some()
+            || self.recovery
+            || self.browser.recovery_preview().is_some()
+            || self.restore_choice.is_some();
+        if !modal {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::L)) {
+                self.edit_address();
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
+                self.open_dialog();
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
                 command = Some(Command::Refresh);
             }
-            if !ctx.memory(|memory| memory.has_focus(egui::Id::unique("filename-filter")))
-                && ctx.input_mut(|input| input.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp))
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp)) && self.browser.can_up() {
+                command = Some(Command::Up);
+            }
+            if !self.edit_location
+                && !ctx.text_edit_focused()
+                && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
+                && let Some(id) = &self.selected
             {
-                command = self.parent_command();
+                command = Some(Command::PreviewRecovery(id.clone()));
             }
         }
-        egui::Panel::top("toolbar")
-            .resizable(false)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(18, 12)))
+        egui::Panel::top("menus")
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(16, 8)))
+            .show(ui, |ui| {
+                let narrow = ui.available_width() < 680.0;
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("archiv").size(20.0));
+                    ui.add_space(14.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(180.0, 30.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            egui::MenuBar::new().ui(ui, |ui| {
+                                ui.menu_button("File", |ui| {
+                                    if ui.button("Open folder…").clicked() {
+                                        self.open_dialog();
+                                        ui.close();
+                                    }
+                                    if ui
+                                        .add_enabled(self.open_command().is_some(), egui::Button::new("Open selected"))
+                                        .on_disabled_hover_text("Select a regular file or folder first")
+                                        .clicked()
+                                    {
+                                        command = self.open_command();
+                                        ui.close();
+                                    }
+                                    if ui.button("Recovery…").clicked() {
+                                        self.recovery = true;
+                                        ui.close();
+                                    }
+                                    ui.menu_button("Collections", |ui| {
+                                        for collection in &self.browser.library().collections {
+                                            if ui.button(&collection.label).clicked() {
+                                                command = Some(Command::BrowseCollection(collection.id));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    ui.menu_button("Sources", |ui| {
+                                        for source in self.browser.sources() {
+                                            if ui.button(&source.label).clicked() {
+                                                command = Some(Command::Navigate(Location {
+                                                    source: source.id,
+                                                    path: RelativePath::default(),
+                                                }));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    ui.separator();
+                                    if ui.button("Quit").clicked() {
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                });
+                                ui.menu_button("Edit", |ui| {
+                                    if ui.button("Preferences…").clicked() {
+                                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                                        ui.close();
+                                    }
+                                    let reason = self
+                                        .selected
+                                        .as_ref()
+                                        .map(|id| self.browser.recovery_availability(id))
+                                        .unwrap_or_else(|| Err("Select a physical item first".into()));
+                                    if ui
+                                        .add_enabled(
+                                            reason.is_ok() && !self.browser.operation_pending(),
+                                            egui::Button::new("Move to recovery…"),
+                                        )
+                                        .on_disabled_hover_text(
+                                            reason.err().unwrap_or_else(|| "Wait for the current operation".into()),
+                                        )
+                                        .clicked()
+                                    {
+                                        if let Some(id) = &self.selected {
+                                            command = Some(Command::PreviewRecovery(id.clone()));
+                                        }
+                                        ui.close();
+                                    }
+                                });
+                                ui.menu_button("View", |ui| {
+                                    if ui.button("Refresh").clicked() {
+                                        command = Some(Command::Refresh);
+                                        ui.close();
+                                    }
+                                    ui.checkbox(&mut self.show_hidden, "Show hidden files");
+                                    ui.small("Use folder arrows to expand in place.");
+                                });
+                                ui.menu_button("Help", |ui| {
+                                    if ui.button("About Archiv").clicked() {
+                                        self.about = true;
+                                        ui.close();
+                                    }
+                                });
+                            });
+                        },
+                    );
+                    if !narrow {
+                        self.search_toolbar(ui, &ctx, modal, &t, &mut command);
+                    }
+                });
+                if narrow {
+                    self.search_toolbar(ui, &ctx, modal, &t, &mut command);
+                }
+            });
+        egui::Panel::top("navigation")
+            .frame(egui::Frame::new().fill(t.workspace).inner_margin(egui::Margin::symmetric(16, 8)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("archiv").size(21.0).strong());
-                    ui.add_space(14.0);
-                    if ui.button("Open folder").on_hover_text("Add a physical source · Ctrl+O").clicked() {
+                    if ui.button("Open folder").clicked() {
                         self.open_dialog();
                     }
-                    if ui.button("Settings").clicked() {
-                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
-                    }
-                    let parent = self.parent_command();
                     if ui
-                        .add_enabled(parent.is_some(), egui::Button::new("Up"))
-                        .on_disabled_hover_text("Already at the source root")
-                        .on_hover_text("Parent folder · Alt+Up")
+                        .add_enabled(self.browser.can_up(), egui::Button::new("Up"))
+                        .on_disabled_hover_text("Already at the root")
                         .clicked()
                     {
-                        command = parent;
+                        command = Some(Command::Up);
                     }
-                    let has_source = self.browser.view().location.is_some() || self.browser.view().collection.is_some();
                     if ui
-                        .add_enabled(has_source, egui::Button::new("Refresh"))
+                        .add_enabled(self.browser.view().phase != Phase::Idle, egui::Button::new("Refresh"))
                         .on_disabled_hover_text("Open a folder first")
-                        .on_hover_text("Refresh directory · F5")
                         .clicked()
                     {
                         command = Some(Command::Refresh);
                     }
-                    if self.browser.view().phase == Phase::Loading && ui.button("Cancel scan").clicked() {
+                    if self.browser.is_loading() && ui.button("Cancel scan").clicked() {
                         command = Some(Command::Cancel);
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        egui::ComboBox::from_id_salt("theme")
-                            .selected_text(self.preferences.theme.label())
-                            .width(86.0)
-                            .show_ui(ui, |ui| {
-                                for value in [ThemePreference::System, ThemePreference::Light, ThemePreference::Dark] {
-                                    ui.selectable_value(&mut self.preferences.theme, value, value.label());
-                                }
+                    ui.separator();
+                    if self.edit_location {
+                        let address = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.location_input)
+                                    .char_limit(16384)
+                                    .desired_width(ui.available_width())
+                                    .hint_text("/absolute/folder"),
+                            )
+                            .accessible_name("Location address");
+                        if self.focus_location {
+                            address.request_focus();
+                            self.focus_location = false;
+                        }
+                        if address.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            command = Some(Command::BrowsePath(self.location_input.clone().into()));
+                            self.edit_location = false;
+                        }
+                        if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                            self.edit_location = false;
+                        }
+                    } else {
+                        let label = if let Some(id) = self.browser.view().collection {
+                            self.browser
+                                .library()
+                                .collections
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map_or_else(|| "Merged view".into(), |c| format!("{} / merged view", c.label))
+                        } else if let Some(location) = &self.browser.view().location {
+                            self.browser.source(location.source).map_or(String::new(), |source| {
+                                display_name(source.root.join(location.path.as_path()).as_os_str())
                             })
-                            .response
-                            .accessible_name("Display theme");
-                        ui.label(RichText::new("Read only").color(t.muted));
-                    });
+                        } else {
+                            "Enter a location…  Ctrl+L".into()
+                        };
+                        if ui
+                            .add(egui::Button::new(label).frame(false).truncate())
+                            .on_hover_text("Edit location · Ctrl+L")
+                            .clicked()
+                        {
+                            self.edit_address();
+                        }
+                    }
                 });
             });
         egui::Panel::bottom("status")
-            .resizable(false)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(18, 8)))
+            .frame(egui::Frame::new().fill(t.panel).inner_margin(egui::Margin::symmetric(16, 7)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let status = match &self.browser.view().phase {
+                    let status = match self.browser.view().phase {
                         Phase::Idle => "No folder opened",
-                        Phase::Loading => "Reading folder…",
+                        Phase::Loading => "Reading…",
                         Phase::Ready => "Ready",
-                        Phase::Cancelled => "Cancelled · results may be incomplete",
-                        Phase::Failed(_) => "Could not read folder",
+                        Phase::Cancelled => "Cancelled · partial results",
+                        Phase::Failed(_) => "Incomplete results",
                     };
-                    ui.label(status);
+                    ui.small(status);
                     ui.separator();
-                    ui.label(format!("{} of {} items", self.filtered.len(), self.browser.view().entries.len()));
+                    ui.small(format!("{} visible items", self.rows.len()));
                     if let Some(summary) = &self.browser.view().summary {
-                        if summary.skipped > 0 {
-                            ui.label(format!("{} unreadable entries skipped", summary.skipped));
-                        }
                         if summary.truncated {
-                            ui.label("Listing limited to 50,000 entries");
+                            ui.small("50,000-entry limit reached");
+                        }
+                        if summary.skipped > 0 {
+                            ui.small(format!("{} entries skipped", summary.skipped));
                         }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.small("Read-only browsing · no file changes");
-                    });
+                    if let Some(status) = self.browser.operation_status() {
+                        ui.add(egui::Label::new(status).truncate()).on_hover_text(status);
+                    }
                 });
             });
-        egui::Panel::left("sources")
-            .default_size(220.0)
-            .min_size(170.0)
-            .max_size(320.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(16))
-            .show(ui, |ui| {
-                ui.label(RichText::new("SOURCES").small().color(t.muted));
-                ui.add_space(8.0);
-                if self.browser.sources().is_empty() {
-                    ui.label(RichText::new("Add a folder to start browsing.").color(t.muted));
-                }
-                for source in self.browser.sources() {
-                    let current = self.browser.view().location.as_ref().is_some_and(|l| l.source == source.id);
-                    ui.push_id(source.id, |ui| {
-                        let label = format!("{} · {}", source.label, source.id.0);
-                        let response = ui.add_sized(
-                            [ui.available_width(), 34.0],
-                            egui::Button::selectable(current, ()).left_text(label).truncate(),
-                        );
-                        if response.on_hover_text(display_name(source.root.as_os_str())).clicked() {
-                            command =
-                                Some(Command::Navigate(Location { source: source.id, path: RelativePath::default() }));
+        if ctx.content_rect().width() >= 650.0 {
+            egui::Panel::left("sources")
+                .default_size(210.0)
+                .min_size(165.0)
+                .frame(egui::Frame::new().fill(t.panel).inner_margin(14))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.small("COLLECTIONS");
+                        ui.add_space(6.0);
+                        if self.browser.library().collections.is_empty() {
+                            ui.weak("Create a collection in Preferences.");
+                        }
+                        for collection in &self.browser.library().collections {
+                            ui.push_id(("collection", collection.id), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(widgets::icon("collection", 17.0, t.media));
+                                    if ui
+                                        .selectable_label(
+                                            self.browser.view().collection == Some(collection.id),
+                                            &collection.label,
+                                        )
+                                        .clicked()
+                                    {
+                                        command = Some(Command::BrowseCollection(collection.id));
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(22.0);
+                        ui.small("SOURCES");
+                        ui.add_space(6.0);
+                        if self.browser.sources().is_empty() {
+                            ui.weak("Add a local or mounted folder.");
+                        }
+                        for source in self.browser.sources() {
+                            ui.push_id(source.id, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.add(widgets::icon("source", 17.0, t.folder));
+                                    let current =
+                                        self.browser.view().location.as_ref().is_some_and(|l| l.source == source.id);
+                                    if ui
+                                        .selectable_label(current, &source.label)
+                                        .on_hover_text(display_name(source.root.as_os_str()))
+                                        .clicked()
+                                    {
+                                        command = Some(Command::Navigate(Location {
+                                            source: source.id,
+                                            path: RelativePath::default(),
+                                        }));
+                                    }
+                                });
+                            });
+                        }
+                        ui.add_space(22.0);
+                        ui.separator();
+                        ui.checkbox(&mut self.show_hidden, "Show hidden files");
+                        if ui.button("Preferences").clicked() {
+                            self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                        }
+                        if ui.button("Recovery").clicked() {
+                            self.recovery = true;
                         }
                     });
-                }
-                ui.add_space(24.0);
-                ui.label(RichText::new("LIBRARY").small().color(t.muted));
-                if self.browser.library().collections.is_empty() {
-                    ui.small("Add optional collections in Settings.");
-                }
-                for collection in &self.browser.library().collections {
-                    if ui
-                        .selectable_label(self.browser.view().collection == Some(collection.id), &collection.label)
-                        .clicked()
-                    {
-                        command = Some(Command::BrowseCollection(collection.id));
-                    }
-                }
-                ui.add_space(24.0);
-                ui.separator();
-                ui.small("Sources stay separate on disk.");
-                ui.add_space(8.0);
-                ui.checkbox(&mut self.show_hidden, "Show hidden files");
-                ui.checkbox(&mut self.preferences.reduced_motion, "Reduce motion");
-            });
-        let selected_entry = self
-            .selected
-            .as_ref()
-            .and_then(|id| self.browser.view().entries.iter().find(|entry| &entry.id == id))
-            .cloned();
-        egui::Panel::right("details")
-            .default_size(240.0)
-            .min_size(190.0)
-            .max_size(380.0)
-            .frame(egui::Frame::new().fill(t.panel).inner_margin(18))
-            .show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt("physical-details").show(ui, |ui| {
-                    ui.label(RichText::new("DETAILS").small().color(t.muted));
-                    ui.add_space(16.0);
-                    if let Some(entry) = &selected_entry {
-                        ui.label(RichText::new(display_name(&entry.name)).strong().size(16.0));
-                        ui.add_space(10.0);
-                        ui.label(entry.kind.label());
-                        if let Some(bytes) = entry.bytes {
-                            ui.label(format!("{} · {bytes} bytes", format_size(bytes)));
-                        }
-                        ui.add_space(16.0);
-                        ui.small("PHYSICAL LOCATION");
-                        let contributors = self.browser.view().contributors.get(&entry.id);
-                        if let Some(ids) = contributors {
-                            ui.label(format!("Virtual folder · {} physical location(s)", ids.len()));
+                });
+        }
+        if ctx.content_rect().width() >= 1000.0 {
+            egui::Panel::right("details")
+                .default_size(225.0)
+                .min_size(185.0)
+                .max_size(360.0)
+                .frame(egui::Frame::new().fill(t.panel).inner_margin(16))
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.small("DETAILS");
+                        ui.add_space(12.0);
+                        if let Some(entry) = self.selected.as_ref().and_then(|id| self.browser.entry(id)) {
+                            ui.heading(display_name(&entry.name));
+                            ui.label(entry.kind.label());
+                            if let Some(size) = entry.bytes {
+                                ui.label(format_size(size));
+                            }
+                            ui.add_space(12.0);
+                            ui.small("PHYSICAL LOCATION");
+                            let ids =
+                                self.browser.contributors(&entry.id).cloned().unwrap_or_else(|| vec![entry.id.clone()]);
+                            if self.browser.view().collection.is_some()
+                                && !self.browser.view().search
+                                && entry.kind == EntryKind::Directory
+                            {
+                                ui.label(format!("Virtual folder · {} locations", ids.len()));
+                            }
                             for id in ids {
                                 if let Some(source) = self.browser.source(id.source) {
-                                    ui.label(format!(
-                                        "{}: {}",
-                                        source.label,
-                                        display_name(source.root.join(id.path.as_path()).as_os_str())
-                                    ));
+                                    ui.label(&source.label);
+                                    ui.label(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                                    if self.browser.view().collection.is_some()
+                                        && !self.browser.view().search
+                                        && entry.kind == EntryKind::Directory
+                                    {
+                                        ui.push_id(("physical-location", &id), |ui| {
+                                            if ui.button(format!("Browse {}", source.label)).clicked() {
+                                                command = Some(Command::Navigate(Location {
+                                                    source: id.source,
+                                                    path: id.path.clone(),
+                                                }));
+                                            }
+                                        });
+                                    }
+                                    ui.add_space(6.0);
                                 }
                             }
-                        } else if let Some(source) = self.browser.source(entry.id.source) {
-                            ui.label(display_name(source.root.join(entry.id.path.as_path()).as_os_str()));
                             ui.add_space(12.0);
-                            ui.small(format!("Source {} · {}", source.id.0, source.label));
-                        }
-                        ui.add_space(10.0);
-                        if contributors.is_some() {
-                            ui.label("Directory metadata may differ by physical location.");
+                            let label = if entry.kind == EntryKind::Directory {
+                                "Open selected folder"
+                            } else {
+                                "Open with application"
+                            };
+                            if ui
+                                .add_enabled(self.open_command().is_some(), egui::Button::new(label))
+                                .on_disabled_hover_text("Links and special files are not opened")
+                                .clicked()
+                            {
+                                command = self.open_command();
+                            }
+                            let reason = self.browser.recovery_availability(&entry.id);
+                            if ui
+                                .add_enabled(
+                                    reason.is_ok() && !self.browser.operation_pending(),
+                                    egui::Button::new("Move to recovery…"),
+                                )
+                                .on_disabled_hover_text(
+                                    reason.err().unwrap_or_else(|| "Wait for the current operation".into()),
+                                )
+                                .clicked()
+                            {
+                                command = Some(Command::PreviewRecovery(entry.id.clone()));
+                            }
+                            ui.small(
+                                "Safeguards apply to Archiv operations. Filesystem permissions remain authoritative.",
+                            );
                         } else {
-                            ui.label(format!("Observed mode: {:04o}", entry.mode & 0o7777));
+                            ui.label("Select an item");
+                            ui.weak("Its physical path and available actions appear here.");
                         }
-                        ui.small("Metadata only; not a write permission check.");
-                        ui.add_space(18.0);
-                        if ui
-                            .add_enabled(entry.kind == EntryKind::Directory, egui::Button::new("Open selected folder"))
-                            .on_disabled_hover_text("File playback and link navigation are not enabled yet")
-                            .clicked()
-                        {
-                            command = Some(Command::Open(entry.id.clone()));
-                        }
-                        if entry.kind == EntryKind::Symlink {
-                            ui.label("Symbolic links are listed but never followed.");
-                        }
-                    } else {
-                        ui.label(RichText::new("Select an item").strong());
-                        ui.label(RichText::new("Its physical location and metadata will appear here.").color(t.muted));
-                    }
-                    ui.add_space(24.0);
-                    ui.separator();
-                    ui.small("No delete, move, upload or permission-changing operation is available.");
-                });
-            });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.workspace).inner_margin(20)).show(ui, |ui| {
-            if let Some(id) = self.browser.view().collection {
-                if let Some(collection) = self.browser.library().collections.iter().find(|c| c.id == id) {
-                    ui.heading(format!("{} · merged view", collection.label));
-                    ui.small("Virtual folder. Exact-name folders combine; files retain their physical locations.");
-                }
-            } else if let Some(location) = &self.browser.view().location
-                && let Some(source) = self.browser.source(location.source)
-            {
-                ui.label(RichText::new(&source.label).size(17.0).strong());
-                ui.label(
-                    RichText::new(display_name(source.root.join(location.path.as_path()).as_os_str()))
-                        .small()
-                        .color(t.muted),
-                );
-            } else {
-                ui.heading("Your files, in one place");
-                ui.label(
-                    RichText::new("Start with a folder on your PC. Nothing is scanned until you choose it.")
-                        .color(t.muted),
-                );
-            }
-            ui.add_space(14.0);
-            let search = ui
-                .add(
-                    egui::TextEdit::singleline(&mut self.query)
-                        .id(egui::Id::unique("filename-filter"))
-                        .hint_text("Filter this folder…")
-                        .char_limit(4096)
-                        .desired_width(ui.available_width())
-                        .margin(egui::Margin::symmetric(10, 7)),
-                )
-                .accessible_name("Filter this folder");
-            if !self.add_source
-                && self.settings.is_none()
-                && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::F))
-            {
-                search.request_focus();
-            }
-            self.update_filter();
-            ui.add_space(12.0);
-            let error = self.error.as_ref().or(match &self.browser.view().phase {
-                Phase::Failed(error) => Some(error),
-                _ => None,
-            });
-            if let Some(error) = error {
-                egui::Frame::new()
-                    .fill(t.card)
-                    .stroke(egui::Stroke::new(1.0, t.border))
-                    .inner_margin(12)
-                    .corner_radius(6)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Unable to complete request").strong());
-                        ui.label(error);
                     });
-                ui.add_space(10.0);
+                });
+        }
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(t.workspace).inner_margin(18)).show(ui, |ui| {
+            if let Some(error) = &self.error {
+                ui.label(error);
             }
             for error in &self.browser.view().errors {
                 ui.label(error);
             }
+            self.refresh_rows();
             if self.browser.view().phase == Phase::Idle {
-                ui.add_space(40.0);
-                ui.label(RichText::new("Choose your first source").size(20.0).strong());
-                ui.label("Browse folders without changing their contents.");
-                ui.add_space(14.0);
-                if ui.button("Open a folder…").clicked() {
-                    self.open_dialog();
-                }
-            } else if self.filtered.is_empty() {
-                ui.add_space(30.0);
-                ui.label(match self.browser.view().phase {
-                    Phase::Loading => "Waiting for directory entries…",
-                    Phase::Failed(_) => "No entries available. Check the path and permissions, then refresh.",
-                    Phase::Cancelled => "Scan cancelled. Refresh to try again.",
-                    _ if !self.query.is_empty() => "No filenames match this filter.",
-                    _ => "This folder has no visible items.",
+                ui.heading("Welcome to Archiv");
+                ui.weak("Browse your folders and build the collections you need.");
+                ui.add_space(18.0);
+                widgets::card(&t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.heading("Start browsing");
+                    ui.label("Choose a local folder or a mounted network source.");
+                    ui.add_space(10.0);
+                    if widgets::pill(ui, "Open a folder…", true, &t).clicked() {
+                        self.open_dialog();
+                    }
+                });
+                ui.add_space(18.0);
+                widgets::card(&t).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.heading("Your workspace");
+                    ui.label("Optional collections combine folders visually while preserving every physical location.");
+                    ui.add_space(10.0);
+                    if widgets::pill(ui, "Configure sources and collections", false, &t).clicked() {
+                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                    }
                 });
             } else {
-                self.file_table(ui, &t, &mut command);
+                self.file_list(ui, &t, &mut command);
             }
         });
         if self.add_source {
-            let response = egui::Modal::new(egui::Id::unique("add-source"))
-                .frame(
-                    egui::Frame::new()
-                        .fill(t.card)
-                        .stroke(egui::Stroke::new(1.0, t.border))
-                        .corner_radius(10)
-                        .inner_margin(egui::Margin::symmetric(20, 16)),
-                )
-                .show(&ctx, |ui| {
-                    ui.set_width(480.0);
-                    ui.heading("Open a folder");
-                    ui.label("Enter an absolute path on this PC. Browsing does not modify files.");
-                    ui.add_space(10.0);
-                    let input = ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.source_input)
-                                .desired_width(f32::INFINITY)
-                                .hint_text("/home/you/Videos")
-                                .char_limit(16384)
-                                .margin(egui::Margin::symmetric(10, 7)),
-                        )
-                        .accessible_name("Folder path");
-                    if self.focus_source {
-                        input.request_focus();
-                        self.focus_source = false;
-                    }
-                    ui.add_space(12.0);
-                    let mut open = false;
-                    ui.horizontal(|ui| {
-                        if ui.button("Cancel").clicked() {
-                            self.add_source = false;
-                        }
-                        open = ui
-                            .add_enabled(
-                                PathBuf::from(&self.source_input).is_absolute(),
-                                egui::Button::new("Browse folder"),
-                            )
-                            .clicked();
-                    });
-                    if open {
-                        command = Some(Command::AddSource(PathBuf::from(&self.source_input)));
+            let response = egui::Modal::new(egui::Id::unique("add-source")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 480.0));
+                ui.heading("Open a folder");
+                ui.label("Absolute local path, including folders mounted from a NAS.");
+                let input = ui
+                    .add(
+                        egui::TextEdit::singleline(&mut self.source_input)
+                            .desired_width(f32::INFINITY)
+                            .char_limit(16384),
+                    )
+                    .accessible_name("Folder path");
+                if self.focus_source {
+                    input.request_focus();
+                    self.focus_source = false;
+                }
+                ui.horizontal(|ui| {
+                    if widgets::pill(ui, "Cancel", false, &t).clicked() {
                         self.add_source = false;
                     }
-                    if !self.source_input.is_empty() && !PathBuf::from(&self.source_input).is_absolute() {
-                        ui.label("Use an absolute path beginning with /.");
+                    if ui
+                        .add_enabled_ui(PathBuf::from(&self.source_input).is_absolute(), |ui| {
+                            widgets::pill(ui, "Browse folder", true, &t)
+                        })
+                        .inner
+                        .clicked()
+                    {
+                        command = Some(Command::AddSource(self.source_input.clone().into()));
+                        self.add_source = false;
                     }
                 });
+            });
             if response.should_close() {
                 self.add_source = false;
             }
         }
         if let Some(editor) = &mut self.settings {
             let mut close = false;
-            let response = egui::Modal::new(egui::Id::unique("library-settings"))
-                .frame(
-                    egui::Frame::new()
-                        .fill(t.card)
-                        .stroke(egui::Stroke::new(1.0, t.border))
-                        .corner_radius(10)
-                        .inner_margin(egui::Margin::symmetric(20, 16)),
-                )
-                .show(&ctx, |ui| {
-                    ui.set_width(640.0);
-                    if let Some(save) = editor.show(ui, self.browser.settings_pending(), self.browser.settings_status())
-                    {
+            let response =
+                egui::Modal::new(egui::Id::unique("preferences")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                    ui.set_width((ctx.content_rect().width() - 80.0).clamp(300.0, 680.0));
+                    ui.heading("Preferences");
+                    if let Some(save) = editor.show(
+                        ui,
+                        &mut self.preferences,
+                        self.browser.settings_pending() || self.browser.operation_pending(),
+                        self.browser.settings_status(),
+                        &t,
+                    ) {
                         command = Some(save);
                     }
                     if let Some(error) = &self.error {
                         ui.label(error);
                     }
-                    close = ui.button("Close settings").clicked();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled_ui(
+                                !self.browser.settings_pending() && !self.browser.operation_pending(),
+                                |ui| widgets::pill(ui, "OK", true, &t),
+                            )
+                            .inner
+                            .clicked()
+                            && let Some(save) = editor.save_command()
+                        {
+                            command = Some(save);
+                            self.close_after_save = true;
+                        }
+                        if widgets::pill(ui, "Cancel", false, &t).clicked() {
+                            close = true;
+                        }
+                    });
                 });
             if close || response.should_close() {
                 self.settings = None;
+            }
+        }
+        if let Some(plan) = self.browser.recovery_preview() {
+            let id = plan.id;
+            let focus_cancel = self.focused_preview != Some(id);
+            self.focused_preview = Some(id);
+            let response =
+                egui::Modal::new(egui::Id::unique("confirm-recovery")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                    ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 500.0));
+                    ui.heading("Move this physical item to recovery?");
+                    if let Some(status) = self.browser.operation_status() {
+                        ui.label(status);
+                    }
+                    ui.label(&plan.source.label);
+                    ui.label(display_name(plan.source.root.join(plan.entry.id.path.as_path()).as_os_str()));
+                    ui.label(format!(
+                        "Recovery: {}",
+                        display_name(plan.source.root.join(archiv_core::actions::RECOVERY_DIR).as_os_str())
+                    ));
+                    ui.label("Nothing is permanently deleted. Other locations are not included.");
+                    ui.horizontal(|ui| {
+                        let cancel = widgets::pill(ui, "Cancel", false, &t);
+                        if focus_cancel {
+                            cancel.request_focus();
+                        }
+                        if cancel.clicked() {
+                            command = Some(Command::DismissRecovery);
+                        }
+                        if ui
+                            .add_enabled_ui(!self.browser.operation_pending(), |ui| {
+                                widgets::pill(ui, "Move to recovery", true, &t)
+                            })
+                            .inner
+                            .clicked()
+                        {
+                            command = Some(Command::ConfirmRecovery(id));
+                        }
+                    });
+                });
+            if response.should_close() {
+                command = Some(Command::DismissRecovery);
+            }
+        }
+        if self.recovery {
+            let response = egui::Modal::new(egui::Id::unique("recovery")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 620.0));
+                ui.heading("Recovery");
+                ui.label("Inspect a physical source. Restore never overwrites an existing item.");
+                egui::ComboBox::from_id_salt("recovery-source")
+                    .selected_text(
+                        self.recovery_source
+                            .and_then(|id| self.browser.source(id))
+                            .map_or("Choose source", |s| s.label.as_str()),
+                    )
+                    .show_ui(ui, |ui| {
+                        for source in self.browser.sources() {
+                            ui.selectable_value(&mut self.recovery_source, Some(source.id), &source.label);
+                        }
+                    });
+                if ui
+                    .add_enabled(
+                        self.recovery_source.is_some() && !self.browser.operation_pending(),
+                        egui::Button::new("Inspect recovery"),
+                    )
+                    .clicked()
+                    && let Some(id) = self.recovery_source
+                {
+                    command = Some(Command::ListRecovery(id));
+                }
+                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                    if let Some((source, records)) =
+                        self.browser.recovery_records().filter(|(id, _)| Some(*id) == self.recovery_source)
+                    {
+                        if records.is_empty() {
+                            ui.label("No recoverable items.");
+                        }
+                        for record in records {
+                            ui.push_id(&record.id, |ui| {
+                                ui.horizontal(|ui| {
+                                    let path = display_name(record.original.as_path().as_os_str());
+                                    ui.label(&path);
+                                    if !record.completed {
+                                        ui.small("Reconciled interrupted move");
+                                    }
+                                    if ui.button("Restore…").clicked() {
+                                        self.restore_choice = Some((*source, record.id.clone(), path));
+                                    }
+                                });
+                            });
+                        }
+                    }
+                });
+                if let Some(status) = self.browser.operation_status() {
+                    ui.label(status);
+                }
+                if widgets::pill(ui, "Close recovery", true, &t).clicked() {
+                    self.recovery = false;
+                }
+            });
+            if response.should_close() {
+                self.recovery = false;
+            }
+        }
+        if let Some((source, id, path)) = &self.restore_choice {
+            let mut close = false;
+            let response =
+                egui::Modal::new(egui::Id::unique("restore-confirm")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                    ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 480.0));
+                    ui.heading("Restore to the original location?");
+                    if let Some(s) = self.browser.source(*source) {
+                        ui.label(display_name(s.root.as_os_str()));
+                    }
+                    ui.label(path);
+                    ui.label("Existing destinations are never overwritten.");
+                    ui.horizontal(|ui| {
+                        if widgets::pill(ui, "Cancel", false, &t).clicked() {
+                            close = true;
+                        }
+                        if widgets::pill(ui, "Restore", true, &t).clicked() {
+                            command = Some(Command::Restore(*source, id.clone()));
+                            close = true;
+                        }
+                    });
+                });
+            if close || response.should_close() {
+                self.restore_choice = None;
+            }
+        }
+        if self.about {
+            let response = egui::Modal::new(egui::Id::unique("about")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                ui.heading("Archiv");
+                ui.label("Native Linux file browsing and configurable visual collections.");
+                ui.label("No telemetry. Lucide icons: ISC / MIT. Code: 0BSD.");
+                if ui.button("Close").clicked() {
+                    self.about = false;
+                }
+            });
+            if response.should_close() {
+                self.about = false;
             }
         }
         if let Some(command) = command {
@@ -485,74 +797,231 @@ impl ArchivApp {
             ctx.request_repaint();
         }
     }
-
-    fn file_table(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, command: &mut Option<Command>) {
-        use egui_extras::{Column, TableBuilder};
-        TableBuilder::new(ui)
-            .id_salt("physical-files")
-            .striped(false)
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .resizable(true)
-            .column(Column::remainder().at_least(160.0))
-            .column(Column::initial(70.0).at_least(50.0))
-            .column(Column::initial(85.0).at_least(60.0))
-            .column(Column::initial(140.0).at_least(90.0))
-            .header(30.0, |mut header| {
-                for label in ["NAME", "KIND", "SIZE", "LOCATION"] {
-                    header.col(|ui| {
-                        ui.label(RichText::new(label).small().color(t.muted));
+    fn search_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        modal: bool,
+        t: &theme::Tokens,
+        command: &mut Option<Command>,
+    ) {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            egui::ComboBox::from_id_salt("theme")
+                .selected_text(self.preferences.theme.label())
+                .width(76.0)
+                .show_ui(ui, |ui| {
+                    for value in [ThemePreference::System, ThemePreference::Light, ThemePreference::Dark] {
+                        ui.selectable_value(&mut self.preferences.theme, value, value.label());
+                    }
+                })
+                .response
+                .accessible_name("Display theme");
+            let search = ui
+                .scope(|ui| {
+                    let style = ui.style_mut();
+                    for widget in [
+                        &mut style.visuals.widgets.inactive,
+                        &mut style.visuals.widgets.hovered,
+                        &mut style.visuals.widgets.active,
+                    ] {
+                        widget.corner_radius = egui::CornerRadius::same(16);
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .id(egui::Id::unique("filename-filter"))
+                            .hint_text("Search…  Enter for subfolders")
+                            .desired_width(240.0)
+                            .char_limit(4096)
+                            .margin(egui::Margin::symmetric(12, 7)),
+                    )
+                    .accessible_name("Filter this folder")
+                })
+                .inner;
+            if !modal && search.has_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                *command = Some(Command::Search(self.query.clone()));
+            }
+            if !modal && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+                search.request_focus();
+            }
+            ui.add(widgets::icon("search", 16.0, t.muted));
+        });
+    }
+    fn file_list(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, command: &mut Option<Command>) {
+        let width = ui.available_width();
+        let location_width = if self.browser.view().search { 200.0 } else { 96.0 };
+        let name_width = (width - 149.0 - location_width).max(90.0);
+        let columns = [
+            (0.0, name_width, "NAME"),
+            (name_width + 8.0, 55.0, "KIND"),
+            (name_width + 71.0, 70.0, "SIZE"),
+            (name_width + 149.0, location_width, "LOCATION"),
+        ];
+        let (header, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
+        for (offset, cell_width, label) in columns {
+            let rect = egui::Rect::from_min_size(header.min + egui::vec2(offset, 0.0), egui::vec2(cell_width, 26.0));
+            widgets::cell(ui, rect, ("header", label), label, t.muted, true);
+        }
+        ui.separator();
+        if self.rows.is_empty() {
+            ui.weak(if self.browser.view().phase == Phase::Loading {
+                "Reading folders…"
+            } else if self.query.is_empty() {
+                "This folder has no visible items."
+            } else {
+                "No matching names. Press Enter to search subfolders."
+            });
+        }
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 26.0, self.rows.len(), |ui, range| {
+            for index in range {
+                let Some((id, depth)) = self.rows.get(index).cloned() else { continue };
+                let Some(entry) = self.browser.entry(&id) else { continue };
+                let selected = self.selected.as_ref() == Some(&id);
+                let branch = self.browser.branch(&id);
+                let expanded = branch.is_some_and(|b| b.expanded);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
+                let response = ui.interact(rect, ui.scope_id().with(("row", &id)), egui::Sense::click());
+                if selected || response.hovered() {
+                    ui.painter().rect_filled(
+                        rect.shrink2(egui::vec2(0.0, 1.0)),
+                        6,
+                        if selected { t.selected } else { t.hover },
+                    );
+                }
+                let name_rect = egui::Rect::from_min_size(rect.min, egui::vec2(name_width, 26.0));
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("entry", &id))
+                        .max_rect(name_rect)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                );
+                child.spacing_mut().item_spacing.x = 4.0;
+                child.spacing_mut().interact_size.y = 22.0;
+                child.add_space(((depth as f32) * 16.0).min((name_width - 70.0).max(0.0)));
+                if entry.kind == EntryKind::Directory {
+                    let arrow = child
+                        .add(
+                            egui::Button::image(widgets::icon(if expanded { "down" } else { "right" }, 13.0, t.muted))
+                                .frame(false)
+                                .min_size(egui::vec2(18.0, 22.0)),
+                        )
+                        .accessible_name(format!(
+                            "{} {}",
+                            if expanded { "Collapse" } else { "Expand" },
+                            display_name(&entry.name)
+                        ));
+                    if arrow.clicked() {
+                        *command = Some(Command::Expand(id.clone()));
+                    }
+                } else {
+                    child.add_space(22.0);
+                }
+                let (icon, color) = widgets::file_icon(entry, expanded, t);
+                child.add(widgets::icon(icon, 17.0, color));
+                let label = display_name(&entry.name);
+                let name = child.add(egui::Button::selectable(selected, ()).left_text(label).frame(false).truncate());
+                if name.clicked() {
+                    self.selected = Some(id.clone());
+                    ui.ctx().request_repaint();
+                }
+                if name.double_clicked() || (name.has_focus() && child.input(|i| i.key_pressed(egui::Key::Enter))) {
+                    *command = Some(if entry.kind == EntryKind::Directory {
+                        Command::Open(id.clone())
+                    } else {
+                        Command::Launch(id.clone())
                     });
                 }
-            })
-            .body(|body| {
-                body.rows(34.0, self.filtered.len(), |mut row| {
-                    let Some(index) = self.filtered.get(row.index()) else { return };
-                    let Some(entry) = self.browser.view().entries.get(*index) else { return };
-                    let selected = self.selected.as_ref() == Some(&entry.id);
-                    row.set_selected(selected);
-                    row.col(|ui| {
-                        ui.push_id(&entry.id, |ui| {
-                            let response = ui.add_sized(
-                                [ui.available_width(), 30.0],
-                                egui::Button::selectable(selected, ())
-                                    .left_text(display_name(&entry.name))
-                                    .frame(false)
-                                    .truncate(),
-                            );
-                            if response.clicked() {
-                                self.selected = Some(entry.id.clone());
-                                ui.ctx().request_repaint();
-                            }
-                            if self.browser.view().phase != Phase::Loading
-                                && entry.kind == EntryKind::Directory
-                                && (response.double_clicked()
-                                    || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))))
-                            {
-                                *command = Some(Command::Open(entry.id.clone()));
-                            }
-                            response.on_hover_text(display_name(entry.id.path.as_path().as_os_str()));
-                        });
-                    });
-                    row.col(|ui| {
-                        ui.label(RichText::new(entry.kind.label()).color(t.muted));
-                    });
-                    row.col(|ui| {
-                        ui.label(
-                            RichText::new(entry.bytes.map(format_size).unwrap_or_else(|| "—".into())).color(t.muted),
-                        );
-                    });
-                    row.col(|ui| {
-                        if let Some(ids) = self.browser.view().contributors.get(&entry.id) {
-                            ui.label(format!("{} locations", ids.len()));
-                        } else if let Some(source) = self.browser.source(entry.id.source) {
-                            ui.label(&source.label);
+                for (offset, cell_width, text) in [
+                    (name_width + 8.0, 55.0, entry.kind.label().to_owned()),
+                    (name_width + 71.0, 70.0, entry.bytes.map(format_size).unwrap_or_else(|| "—".into())),
+                ] {
+                    widgets::cell(
+                        ui,
+                        egui::Rect::from_min_size(rect.min + egui::vec2(offset, 0.0), egui::vec2(cell_width, 26.0)),
+                        ("column", &id, offset.to_bits()),
+                        &text,
+                        t.muted,
+                        false,
+                    );
+                }
+                let location = if let Some(branch) = branch.filter(|b| b.expanded) {
+                    match &branch.view.phase {
+                        Phase::Loading => "Reading…".into(),
+                        Phase::Failed(_) => "Unavailable".into(),
+                        Phase::Cancelled => "Cancelled".into(),
+                        _ if branch.view.summary.as_ref().is_some_and(|s| s.truncated || s.skipped > 0) => {
+                            "Partial listing".into()
                         }
-                    });
+                        _ => self
+                            .browser
+                            .contributors(&id)
+                            .map_or_else(|| "Folder".into(), |ids| format!("{} locations", ids.len())),
+                    }
+                } else if let Some(ids) = self.browser.contributors(&id) {
+                    format!("{} locations", ids.len())
+                } else {
+                    self.browser.source(id.source).map_or(String::new(), |s| {
+                        if self.browser.view().search {
+                            format!(
+                                "{} · {}",
+                                s.label,
+                                display_name(id.path.parent().unwrap_or_default().as_path().as_os_str())
+                            )
+                        } else {
+                            s.label.clone()
+                        }
+                    })
+                };
+                let location_response = widgets::cell(
+                    ui,
+                    egui::Rect::from_min_size(
+                        rect.min + egui::vec2(name_width + 149.0, 0.0),
+                        egui::vec2(location_width, 26.0),
+                    ),
+                    ("location", &id),
+                    &location,
+                    t.muted,
+                    false,
+                );
+                if let Some(branch) = branch.filter(|b| !b.view.errors.is_empty()) {
+                    location_response.on_hover_text(branch.view.errors.join("\n"));
+                } else if let Some(summary) =
+                    branch.and_then(|b| b.view.summary.as_ref()).filter(|s| s.truncated || s.skipped > 0)
+                {
+                    location_response.on_hover_text(format!(
+                        "Listing limit reached: {}. Unreadable entries: {}. Refresh to retry.",
+                        summary.truncated, summary.skipped
+                    ));
+                } else if let Some(source) = self.browser.source(id.source) {
+                    location_response.on_hover_text(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                }
+                if response.clicked() {
+                    self.selected = Some(id.clone());
+                    ui.ctx().request_repaint();
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Open").clicked() {
+                        *command = Some(if entry.kind == EntryKind::Directory {
+                            Command::Open(id.clone())
+                        } else {
+                            Command::Launch(id.clone())
+                        });
+                        ui.close();
+                    }
+                    let reason = self.browser.recovery_availability(&id);
+                    if ui
+                        .add_enabled(reason.is_ok(), egui::Button::new("Move to recovery…"))
+                        .on_disabled_hover_text(reason.err().unwrap_or_default())
+                        .clicked()
+                    {
+                        *command = Some(Command::PreviewRecovery(id.clone()));
+                        ui.close();
+                    }
                 });
-            });
+            }
+        });
     }
 }
-
 impl eframe::App for ArchivApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.browser.poll() {
@@ -566,7 +1035,6 @@ impl eframe::App for ArchivApp {
         eframe::set_value(storage, "archiv-presentation", &self.preferences);
     }
 }
-
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")

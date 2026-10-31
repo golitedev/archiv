@@ -1,9 +1,8 @@
 # archiv-platform
 
-Read-only Linux directory adapter. Uses root directory descriptors, openat2 BENEATH/NO_SYMLINKS
-and descriptor-backed enumeration. Emits up to 128 entries per batch and 50,000 per listing;
-links are listed without traversal. NFS sources verify their expected mount/export against a held root descriptor. Atomic, bounded
-application-settings IO is separate from browsing; no library-content mutation API exists.
-
-Read the [architecture](../../docs/architecture.md), [safety design](../../docs/safety.md),
-[development guide](../../docs/development.md) and [instructions](../../AGENTS.md) before changes.
+Linux filesystem/process and settings boundaries. Directory reads use held descriptors and
+openat2; guarded NFS roots are verified against mountinfo. Recovery/restore uses no-follow,
+no-cross-mount resolution, private prepared/completed manifests, directory syncing and atomic
+no-replace rename. No purge or recursive unlink exists. External programs receive structured
+arguments. Settings persist atomically. See ../../docs/file-actions.md for concurrency/durability
+limits and ../../docs/safety.md for requirements. Tests use temporary synthetic data only.
