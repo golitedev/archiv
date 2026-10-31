@@ -10,6 +10,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+archiv-core.workspace = true
 archiv-engine.workspace = true
 archiv-platform.workspace = true
 archiv-ui-egui.workspace = true

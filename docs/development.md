@@ -24,8 +24,9 @@ partial/limited results, and 30 seconds without worker progress. Normal filename
 one-line output; output is human-readable, not a byte-preserving machine protocol.
 
 GUI preferences/window state use eframe's Linux configuration location under the `archiv` app ID.
-Only theme, reduced-motion preference and framework window state are saved. Folder/source history,
-queries and media inventories are not persisted. No startup home-directory scan occurs.
+Theme, reduced-motion preference and framework window state use eframe persistence. Explicit library
+definitions use the separate atomic JSON store described in nas-setup.md. Temporary Open folder
+sources, queries and media inventories are not persisted. Restoring definitions performs no scan.
 
 ## Crate workflow
 
@@ -50,7 +51,7 @@ Run all user intents through the headless Browser and shared FrameCommands admis
 Never introduce IO into a rendering frame. Worker queues, event payloads and total listings are
 bounded. A cancelled syscall may remain blocked in the kernel; do not join it on the UI thread
 or spawn unlimited replacements. Read metadata without following links. Do not restore navigation
-from persisted paths automatically. No mutation API is available: adding one requires the M4 policy
+from persisted paths automatically. Only application-settings writes are available; no library-content mutation API exists: adding one requires the M4 policy
 and recovery evidence in safety.md, not a direct filesystem call in a widget.
 
 Review actual native output using the [UI checklist](ui-review.md). Use temporary synthetic files,

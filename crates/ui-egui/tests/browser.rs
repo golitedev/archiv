@@ -86,3 +86,71 @@ fn theme_choice_applies_to_both_framework_style_branches() {
         assert_eq!(h.ctx.style_of(branch).visuals.panel_fill, egui::Color32::from_rgb(38, 38, 42));
     }
 }
+
+#[test]
+fn settings_creates_saved_optional_collection_and_browses_it() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(fixture.path().join("disk/movies/Title")).unwrap();
+    std::fs::write(fixture.path().join("disk/movies/Title/movie.mkv"), b"untouched").unwrap();
+    let path = fixture.path().join("config/library.json");
+    let mut browser = Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap();
+    browser.configure(Default::default(), path.clone()).unwrap();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1180.0, 760.0))
+        .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
+    h.get_by_label("Settings").click();
+    h.run_steps(3);
+    h.get_by_label("Add source").click();
+    h.run_steps(3);
+    h.run_steps(20);
+    h.get_by_label("Local mount / folder").scroll_to_me();
+    h.run_steps(10);
+    h.get_by_label("Local mount / folder").click();
+    h.run_steps(2);
+    assert!(h.get_by_label("Local mount / folder").is_focused());
+    h.get_by_label("Local mount / folder").type_text(fixture.path().join("disk").to_str().unwrap());
+    h.run_steps(2);
+    h.get_by_label("Require expected NFS mount").click();
+    h.run_steps(2);
+    h.get_by_label("Add collection").scroll_to_me();
+    h.run_steps(10);
+    h.get_by_label("Add collection").click();
+    h.run_steps(3);
+    h.get_by_label("Include Disk 1").scroll_to_me();
+    h.run_steps(10);
+    h.get_by_label("Include Disk 1").click();
+    h.run_steps(3);
+    h.get_by_label("Relative folder").scroll_to_me();
+    h.run_steps(10);
+    h.get_by_label("Relative folder").click();
+    h.run_steps(2);
+    h.get_by_label("Relative folder").type_text("movies");
+    h.run_steps(2);
+    h.run_steps(20);
+    h.get_by_label("Save library").click();
+    h.run_steps(3);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.state().browser().settings_pending() && Instant::now() < deadline {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.run_steps(3);
+    assert_eq!(h.state().browser().view().phase, Phase::Idle);
+    assert_eq!(archiv_platform::library::load(&path).unwrap().collections.len(), 1);
+    h.get_by_label("Close settings").click();
+    h.run_steps(3);
+    h.get_by_label("Movies").click();
+    h.run_steps(3);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().collection, Some(1));
+    h.get_by_label("Title").click();
+    h.run_steps(2);
+    h.get_by_label("Open selected folder").click();
+    h.run_steps(2);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().entries[0].name, "movie.mkv");
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowUp);
+    h.run_steps(2);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().entries[0].name, "Title");
+}

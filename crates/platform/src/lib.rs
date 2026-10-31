@@ -1,4 +1,7 @@
-//! Bounded, no-follow read-only directory access on Linux. No filesystem mutation API exists.
+//! Bounded, no-follow read-only directory access on Linux. No library-content mutation API exists.
+
+pub mod library;
+mod mount;
 
 use archiv_core::{Entry, EntryId, EntryKind, RelativePath, Source};
 use std::fmt;
@@ -88,6 +91,10 @@ impl DirectoryReader for LocalDirectoryReader {
             | rustix::fs::OFlags::NOFOLLOW;
         let root = rustix::fs::open(&request.source.root, flags, rustix::fs::Mode::empty())
             .map_err(|error| failure(error.into()))?;
+        let root = File::from(root);
+        if let Some(remote) = &request.source.nfs_remote {
+            mount::verify(&request.source.root, remote, &root).map_err(failure)?;
+        }
         let relative = if request.path.as_path().as_os_str().is_empty() {
             std::path::Path::new(".")
         } else {
@@ -100,7 +107,13 @@ impl DirectoryReader for LocalDirectoryReader {
             relative,
             flags,
             rustix::fs::Mode::empty(),
-            rustix::fs::ResolveFlags::BENEATH | rustix::fs::ResolveFlags::NO_SYMLINKS,
+            rustix::fs::ResolveFlags::BENEATH
+                | rustix::fs::ResolveFlags::NO_SYMLINKS
+                | if request.source.nfs_remote.is_some() {
+                    rustix::fs::ResolveFlags::NO_XDEV
+                } else {
+                    rustix::fs::ResolveFlags::empty()
+                },
         )
         .map_err(|error| failure(error.into()))?;
         let directory = File::from(directory);
@@ -158,6 +171,9 @@ impl DirectoryReader for LocalDirectoryReader {
         if !summary.cancelled && !batch.is_empty() && !emit(batch) {
             summary.cancelled = true;
         }
+        if let Some(remote) = &request.source.nfs_remote {
+            mount::verify(&request.source.root, remote, &root).map_err(failure)?;
+        }
         Ok(summary)
     }
 }
@@ -170,9 +186,24 @@ mod tests {
 
     fn request(root: &std::path::Path) -> ReadRequest {
         ReadRequest {
-            source: Source { id: SourceId(1), root: root.to_owned(), label: "Fixture".into() },
+            source: Source { id: SourceId(1), root: root.to_owned(), label: "Fixture".into(), nfs_remote: None },
             path: RelativePath::default(),
         }
+    }
+
+    #[test]
+    fn nfs_source_never_lists_a_local_mountpoint_fallback() {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::write(fixture.path().join("local-fallback"), b"not NAS").unwrap();
+        let mut req = request(fixture.path());
+        req.source.nfs_remote = Some("fixture:/export".into());
+        let mut emitted = false;
+        let result = LocalDirectoryReader.read(&req, &AtomicBool::new(false), &mut |_| {
+            emitted = true;
+            true
+        });
+        assert!(result.is_err());
+        assert!(!emitted);
     }
 
     #[test]

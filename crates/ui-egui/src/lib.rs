@@ -1,5 +1,6 @@
 //! Native read-only desktop browsing. Widgets dispatch the same headless engine commands.
 
+mod settings;
 mod theme;
 pub use theme::ThemePreference;
 
@@ -9,7 +10,7 @@ use egui::RichText;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Presentation preferences only; sources and personal inventories are not persisted.
+/// Presentation preferences only; explicit library definitions have a separate atomic store.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preferences {
@@ -33,6 +34,7 @@ pub struct ArchivApp {
     source_input: String,
     focus_source: bool,
     error: Option<String>,
+    settings: Option<settings::Editor>,
 }
 
 impl ArchivApp {
@@ -51,6 +53,7 @@ impl ArchivApp {
             source_input: String::new(),
             focus_source: false,
             error: None,
+            settings: None,
         }
     }
 
@@ -66,7 +69,14 @@ impl ArchivApp {
 
     fn dispatch(&mut self, frame: u64, command: Command) {
         let navigation = !matches!(command, Command::Cancel);
-        let new_location = matches!(command, Command::AddSource(_) | Command::Navigate(_) | Command::Open(_));
+        let new_location = matches!(
+            command,
+            Command::AddSource(_)
+                | Command::Navigate(_)
+                | Command::Open(_)
+                | Command::BrowseCollection(_)
+                | Command::Up
+        );
         match self.commands.dispatch(frame, command, &mut self.browser) {
             Ok(()) => {
                 self.error = None;
@@ -87,8 +97,7 @@ impl ArchivApp {
     }
 
     fn parent_command(&self) -> Option<Command> {
-        let location = self.browser.view().location.as_ref()?;
-        Some(Command::Navigate(Location { source: location.source, path: location.path.parent()? }))
+        self.browser.can_up().then_some(Command::Up)
     }
 
     fn update_filter(&mut self) {
@@ -111,10 +120,10 @@ impl ArchivApp {
         let t = theme::apply(&ctx, self.preferences.theme, self.preferences.reduced_motion);
         self.update_filter();
         let mut command = None;
-        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
+        if self.settings.is_none() && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::O)) {
             self.open_dialog();
         }
-        if !self.add_source {
+        if !self.add_source && self.settings.is_none() {
             if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
                 command = Some(Command::Refresh);
             }
@@ -134,6 +143,9 @@ impl ArchivApp {
                     if ui.button("Open folder").on_hover_text("Add a physical source · Ctrl+O").clicked() {
                         self.open_dialog();
                     }
+                    if ui.button("Settings").clicked() {
+                        self.settings = Some(settings::Editor::new(self.browser.library().clone()));
+                    }
                     let parent = self.parent_command();
                     if ui
                         .add_enabled(parent.is_some(), egui::Button::new("Up"))
@@ -143,7 +155,7 @@ impl ArchivApp {
                     {
                         command = parent;
                     }
-                    let has_source = self.browser.view().location.is_some();
+                    let has_source = self.browser.view().location.is_some() || self.browser.view().collection.is_some();
                     if ui
                         .add_enabled(has_source, egui::Button::new("Refresh"))
                         .on_disabled_hover_text("Open a folder first")
@@ -194,7 +206,7 @@ impl ArchivApp {
                         }
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.small("Local browsing · no file changes");
+                        ui.small("Read-only browsing · no file changes");
                     });
                 });
             });
@@ -225,10 +237,16 @@ impl ArchivApp {
                 }
                 ui.add_space(24.0);
                 ui.label(RichText::new("LIBRARY").small().color(t.muted));
-                for label in ["Movies", "TV", "Anime"] {
-                    ui.add_enabled(false, egui::Button::new(label).frame(false)).on_disabled_hover_text(
-                        "Merged library views are planned; browse physical sources in this version",
-                    );
+                if self.browser.library().collections.is_empty() {
+                    ui.small("Add optional collections in Settings.");
+                }
+                for collection in &self.browser.library().collections {
+                    if ui
+                        .selectable_label(self.browser.view().collection == Some(collection.id), &collection.label)
+                        .clicked()
+                    {
+                        command = Some(Command::BrowseCollection(collection.id));
+                    }
                 }
                 ui.add_space(24.0);
                 ui.separator();
@@ -248,46 +266,69 @@ impl ArchivApp {
             .max_size(380.0)
             .frame(egui::Frame::new().fill(t.panel).inner_margin(18))
             .show(ui, |ui| {
-                ui.label(RichText::new("DETAILS").small().color(t.muted));
-                ui.add_space(16.0);
-                if let Some(entry) = &selected_entry {
-                    ui.label(RichText::new(display_name(&entry.name)).strong().size(16.0));
-                    ui.add_space(10.0);
-                    ui.label(entry.kind.label());
-                    if let Some(bytes) = entry.bytes {
-                        ui.label(format!("{} · {bytes} bytes", format_size(bytes)));
-                    }
+                egui::ScrollArea::vertical().id_salt("physical-details").show(ui, |ui| {
+                    ui.label(RichText::new("DETAILS").small().color(t.muted));
                     ui.add_space(16.0);
-                    ui.small("PHYSICAL LOCATION");
-                    if let Some(source) = self.browser.source(entry.id.source) {
-                        ui.label(display_name(source.root.join(entry.id.path.as_path()).as_os_str()));
-                        ui.add_space(12.0);
-                        ui.small(format!("Source {} · {}", source.id.0, source.label));
+                    if let Some(entry) = &selected_entry {
+                        ui.label(RichText::new(display_name(&entry.name)).strong().size(16.0));
+                        ui.add_space(10.0);
+                        ui.label(entry.kind.label());
+                        if let Some(bytes) = entry.bytes {
+                            ui.label(format!("{} · {bytes} bytes", format_size(bytes)));
+                        }
+                        ui.add_space(16.0);
+                        ui.small("PHYSICAL LOCATION");
+                        let contributors = self.browser.view().contributors.get(&entry.id);
+                        if let Some(ids) = contributors {
+                            ui.label(format!("Virtual folder · {} physical location(s)", ids.len()));
+                            for id in ids {
+                                if let Some(source) = self.browser.source(id.source) {
+                                    ui.label(format!(
+                                        "{}: {}",
+                                        source.label,
+                                        display_name(source.root.join(id.path.as_path()).as_os_str())
+                                    ));
+                                }
+                            }
+                        } else if let Some(source) = self.browser.source(entry.id.source) {
+                            ui.label(display_name(source.root.join(entry.id.path.as_path()).as_os_str()));
+                            ui.add_space(12.0);
+                            ui.small(format!("Source {} · {}", source.id.0, source.label));
+                        }
+                        ui.add_space(10.0);
+                        if contributors.is_some() {
+                            ui.label("Directory metadata may differ by physical location.");
+                        } else {
+                            ui.label(format!("Observed mode: {:04o}", entry.mode & 0o7777));
+                        }
+                        ui.small("Metadata only; not a write permission check.");
+                        ui.add_space(18.0);
+                        if ui
+                            .add_enabled(entry.kind == EntryKind::Directory, egui::Button::new("Open selected folder"))
+                            .on_disabled_hover_text("File playback and link navigation are not enabled yet")
+                            .clicked()
+                        {
+                            command = Some(Command::Open(entry.id.clone()));
+                        }
+                        if entry.kind == EntryKind::Symlink {
+                            ui.label("Symbolic links are listed but never followed.");
+                        }
+                    } else {
+                        ui.label(RichText::new("Select an item").strong());
+                        ui.label(RichText::new("Its physical location and metadata will appear here.").color(t.muted));
                     }
-                    ui.add_space(10.0);
-                    ui.label(format!("Observed mode: {:04o}", entry.mode & 0o7777));
-                    ui.small("Metadata only; not a write permission check.");
-                    ui.add_space(18.0);
-                    if ui
-                        .add_enabled(entry.kind == EntryKind::Directory, egui::Button::new("Open selected folder"))
-                        .on_disabled_hover_text("File playback and link navigation are not enabled yet")
-                        .clicked()
-                    {
-                        command = Some(Command::Open(entry.id.clone()));
-                    }
-                    if entry.kind == EntryKind::Symlink {
-                        ui.label("Symbolic links are listed but never followed.");
-                    }
-                } else {
-                    ui.label(RichText::new("Select an item").strong());
-                    ui.label(RichText::new("Its physical location and metadata will appear here.").color(t.muted));
-                }
-                ui.add_space(24.0);
-                ui.separator();
-                ui.small("No delete, move, upload or permission-changing operation is available.");
+                    ui.add_space(24.0);
+                    ui.separator();
+                    ui.small("No delete, move, upload or permission-changing operation is available.");
+                });
             });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.workspace).inner_margin(20)).show(ui, |ui| {
-            if let Some(location) = &self.browser.view().location
+            if let Some(id) = self.browser.view().collection {
+                if let Some(collection) = self.browser.library().collections.iter().find(|c| c.id == id) {
+                    ui.heading(format!("{} · merged view", collection.label));
+                    ui.small("Virtual folder. Exact-name folders combine; files retain their physical locations.");
+                }
+            } else if let Some(location) = &self.browser.view().location
                 && let Some(source) = self.browser.source(location.source)
             {
                 ui.label(RichText::new(&source.label).size(17.0).strong());
@@ -314,7 +355,10 @@ impl ArchivApp {
                         .margin(egui::Margin::symmetric(10, 7)),
                 )
                 .accessible_name("Filter this folder");
-            if !self.add_source && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+            if !self.add_source
+                && self.settings.is_none()
+                && ctx.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::F))
+            {
                 search.request_focus();
             }
             self.update_filter();
@@ -334,6 +378,9 @@ impl ArchivApp {
                         ui.label(error);
                     });
                 ui.add_space(10.0);
+            }
+            for error in &self.browser.view().errors {
+                ui.label(error);
             }
             if self.browser.view().phase == Phase::Idle {
                 ui.add_space(40.0);
@@ -408,6 +455,31 @@ impl ArchivApp {
                 self.add_source = false;
             }
         }
+        if let Some(editor) = &mut self.settings {
+            let mut close = false;
+            let response = egui::Modal::new(egui::Id::unique("library-settings"))
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.card)
+                        .stroke(egui::Stroke::new(1.0, t.border))
+                        .corner_radius(10)
+                        .inner_margin(egui::Margin::symmetric(20, 16)),
+                )
+                .show(&ctx, |ui| {
+                    ui.set_width(640.0);
+                    if let Some(save) = editor.show(ui, self.browser.settings_pending(), self.browser.settings_status())
+                    {
+                        command = Some(save);
+                    }
+                    if let Some(error) = &self.error {
+                        ui.label(error);
+                    }
+                    close = ui.button("Close settings").clicked();
+                });
+            if close || response.should_close() {
+                self.settings = None;
+            }
+        }
         if let Some(command) = command {
             self.dispatch(frame, command);
             ctx.request_repaint();
@@ -424,8 +496,9 @@ impl ArchivApp {
             .column(Column::remainder().at_least(160.0))
             .column(Column::initial(70.0).at_least(50.0))
             .column(Column::initial(85.0).at_least(60.0))
+            .column(Column::initial(140.0).at_least(90.0))
             .header(30.0, |mut header| {
-                for label in ["NAME", "KIND", "SIZE"] {
+                for label in ["NAME", "KIND", "SIZE", "LOCATION"] {
                     header.col(|ui| {
                         ui.label(RichText::new(label).small().color(t.muted));
                     });
@@ -450,7 +523,8 @@ impl ArchivApp {
                                 self.selected = Some(entry.id.clone());
                                 ui.ctx().request_repaint();
                             }
-                            if entry.kind == EntryKind::Directory
+                            if self.browser.view().phase != Phase::Loading
+                                && entry.kind == EntryKind::Directory
                                 && (response.double_clicked()
                                     || (response.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))))
                             {
@@ -466,6 +540,13 @@ impl ArchivApp {
                         ui.label(
                             RichText::new(entry.bytes.map(format_size).unwrap_or_else(|| "—".into())).color(t.muted),
                         );
+                    });
+                    row.col(|ui| {
+                        if let Some(ids) = self.browser.view().contributors.get(&entry.id) {
+                            ui.label(format!("{} locations", ids.len()));
+                        } else if let Some(source) = self.browser.source(entry.id.source) {
+                            ui.label(&source.label);
+                        }
                     });
                 });
             });

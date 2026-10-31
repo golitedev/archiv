@@ -24,8 +24,8 @@ Do not couple the domain model to `/mnt/diskN`, a username, one SSH alias or a s
 
 Core models, the Linux directory reader, the bounded browsing engine and the native shell now
 exist. The executable supports a GUI and `--list` through the same engine. The UI uses upstream
-egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. No mutation,
-merged-view implementation, index or transport adapter is present. Enforce dependency direction
+egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. No library mutation,
+index or SSH transport adapter is present. Enforce dependency direction
 in reviews; no automated layer checker exists yet.
 
 ## Identity and visual merging
@@ -73,8 +73,12 @@ Record actual enforcement scope in the UI. Details: [safety.md](safety.md).
 
 ## Persistence and configuration
 
-Plan for versioned TOML configuration and a local SQLite metadata index; schema/migration code is
-not present. The conceptual example is not a supported config format yet. Unknown destructive
+Versioned JSON library settings are implemented; future policy TOML and a local SQLite metadata
+index are not. The conceptual TOML example remains unsupported. Library version 1 rejects unknown
+fields and invalid references. Settings are saved by bounded engine workers using a private
+same-directory temporary file, file sync, atomic rename and parent-directory sync. A directory
+sync failure reports uncertain durability, even if the replacement is visible. Sources restore
+without a scan. Malformed files cause an actionable startup error and are never overwritten. Unknown destructive
 settings and malformed policies must not fall back to permissive defaults. Settings, jobs and
 journals need atomic updates, crash reconciliation and bounded growth; do not store credentials
 in them. User-specific state follows XDG directories and stays out of Git.
@@ -88,7 +92,7 @@ from NFS mounts. Transfers over SSH bypass any Samba recycle policy.
 
 ## Deliberately deferred
 
-Merged collection behavior, config parsing, indexing, mutation, SSH transfers/authentication,
+Aliases, policy config parsing, indexing, mutation, SSH transfers/authentication,
 packaging, CI services and a NAS agent. The design is
 small enough to revise as the first read-only slice supplies evidence; do not add a plugin framework
 or separate service for every crate.

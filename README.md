@@ -6,16 +6,18 @@ A Rust-native Linux file manager for an Arch PC and a NAS. The first implementat
 ## Available now
 
 - Open explicitly chosen local folders through an absolute path or `--browse`.
+- Save physical/NFS sources and optional merged collections in native **Settings**, without startup scans.
+- Browse exact-name folders from multiple disks as one virtual folder; duplicate files retain locations.
 - Navigate real subdirectories and return to a source root; add multiple physical sources.
 - Incremental background enumeration, cancel/refresh, folder-first ordering and a virtualized list.
 - Filter filenames in the current directory, show hidden files, select items and inspect physical
   paths, byte sizes and observed Unix modes. No recursive size computation or index scan.
 - Light/Dark/System appearance and a saved reduced-animation preference. Sources and paths are
-  session-only: restart never silently reopens and scans a previous source.
+  session-only through Open folder; Settings explicitly saves definitions without scanning them at restart.
 - Headless read-only listing through the same engine, without a display server.
 
 No deletion, rename, move, upload, permission change or application-launch operation exists yet.
-No NAS connection, export, permission or file has been changed during implementation.
+NAS inspection used read-only SSH; no exports, mounts, permissions or files were changed.
 
 ## Run
 
@@ -26,6 +28,7 @@ rustfmt and Clippy. GUI execution needs a native Linux Wayland/X11 session and O
 cargo run -p archiv --locked
 cargo run -p archiv --locked -- --browse "$HOME/Videos" --theme dark
 cargo run -p archiv --locked -- --list /absolute/local/folder
+cargo run -p archiv --locked -- --list-collection 1 --library /absolute/library.json
 cargo run -p archiv --locked -- --help
 ```
 
@@ -42,7 +45,9 @@ links appear in listings but are not traversed. File opening/playback is not imp
 The first directory listing is limited to 50,000 entries, emitted in batches of at most 128 by two
 bounded workers. Linux `openat2` (kernel 5.6+) and mounted procfs are required. Failures are reported;
 there is no permissive path-resolution fallback. These reads are not a filesystem sandbox or a
-substitute for NAS permissions. NFS mount identity/availability checking is still a later milestone.
+substitute for NAS permissions. Configured NFS sources require their exact mount point and
+server:/export identity. Each read checks mountinfo against the held descriptor before and after enumeration, refusing missing/different mounts
+and nested mount traversal. This identifies the local mount, not cryptographically the server.
 
 ## Appearance and current limits
 
@@ -52,9 +57,15 @@ JetBrains Mono, Lucide icons, full desktop text-scaling/reduced-motion discovery
 coverage and complete keyboard/accessibility acceptance remain M1 work. See
 [font resources](docs/third-party-assets.md) and [validation evidence](docs/validation.md).
 
-Merged Movies/TV/Anime categories are visibly disabled placeholders. Recursive/merged search,
-SQLite indexing, configuration parsing, NFS mount management, mpv, rsync and configurable recovery
-are not implemented. The [example config](examples/archiv.example.toml) remains a design sketch.
+Use **Settings → Add source** for each mounted disk, then **Add collection** and explicitly include
+its contributing sources and relative folders (for example `data/media/movies`). Merging is optional,
+exact and case-sensitive; it changes no disk contents. Direct source browsing remains available.
+See [NAS setup and collections](docs/nas-setup.md) for the Debian/Arch setup boundary and configuration.
+
+Recursive search, SQLite indexing, aliases, mpv, rsync and configurable recovery are not implemented.
+The [example config](examples/archiv.example.toml) remains a future policy sketch, not the supported
+library format. Settings uses versioned JSON at `$XDG_CONFIG_HOME/archiv/library.json` (or
+`~/.config/archiv/library.json`); `--library FILE` selects another file. No credentials are saved.
 
 ## Project documents
 

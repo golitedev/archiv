@@ -1,8 +1,9 @@
 //! Headless, bounded read-only browsing with cancellation and stale-result rejection.
 
+use archiv_core::library::{LibrarySettings, merge_directories};
 use archiv_core::{Entry, EntryId, EntryKind, Location, RelativePath, Source, SourceId, display_name, sort_entries};
 use archiv_platform::{DirectoryReader, ReadRequest, ReadSummary};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,6 +14,12 @@ use std::sync::{Arc, Mutex, mpsc};
 pub enum Command {
     /// Register a source and browse its root. Requires an absolute physical path.
     AddSource(PathBuf),
+    /// Browse a configured virtual collection at its root.
+    BrowseCollection(u64),
+    /// Navigate back within the current physical or virtual view.
+    Up,
+    /// Validate and atomically save explicit library settings in a worker.
+    SaveLibrary(LibrarySettings),
     /// Browse within a registered source; symlink resolution is rejected by the adapter.
     Navigate(Location),
     /// Enter an observed physical directory, without launching files.
@@ -44,6 +51,12 @@ pub struct View {
     pub location: Option<Location>,
     /// Incrementally delivered entries, sorted once on completion.
     pub entries: Vec<Entry>,
+    /// Virtual collection identity, absent for physical navigation.
+    pub collection: Option<u64>,
+    /// Every physical directory contributing to each merged row.
+    pub contributors: HashMap<EntryId, Vec<EntryId>>,
+    /// Per-location failures; merged results are explicitly partial when nonempty.
+    pub errors: Vec<String>,
     /// Enumeration state.
     pub phase: Phase,
     /// Completion limits or skipped entries.
@@ -69,7 +82,8 @@ impl std::error::Error for EngineError {}
 
 struct Job {
     generation: u64,
-    request: ReadRequest,
+    requests: Vec<ReadRequest>,
+    save: Option<(PathBuf, LibrarySettings)>,
     cancel: Arc<AtomicBool>,
 }
 struct Event {
@@ -78,7 +92,9 @@ struct Event {
 }
 enum Update {
     Batch(Vec<Entry>),
+    Discard(Location),
     Finished(Result<ReadSummary, String>),
+    Saved(Result<LibrarySettings, String>),
 }
 
 /// Two bounded workers; no storage mutation or application launch capability exists.
@@ -91,6 +107,13 @@ pub struct Browser {
     generation: u64,
     last_request: u64,
     next_source: u64,
+    library: LibrarySettings,
+    settings_path: Option<PathBuf>,
+    settings_pending: bool,
+    settings_status: Option<String>,
+    locations: Vec<Location>,
+    history: Vec<Vec<Location>>,
+    pending: usize,
 }
 
 impl Browser {
@@ -120,19 +143,28 @@ impl Browser {
                             }
                             sent
                         };
-                        // Last-resort containment for a faulty adapter. Normal filesystem failures
-                        // are Result errors. No mutation exists, and the worker continues serving jobs.
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            reader.read(&job.request, &job.cancel, &mut |batch| {
-                                !job.cancel.load(Ordering::Acquire) && send(Update::Batch(batch))
-                            })
-                        }));
-                        let result = match result {
-                            Ok(result) => result.map_err(|error| error.to_string()),
-                            Err(_) => Err("The directory reader failed unexpectedly; refresh to retry".to_owned()),
-                        };
-                        if !send(Update::Finished(result)) {
-                            return;
+                        if let Some((path, settings)) = job.save {
+                            let result = archiv_platform::library::save(&path, &settings).map(|()| settings);
+                            if !send(Update::Saved(result)) {
+                                return;
+                            }
+                            continue;
+                        }
+                        // Sources in a collection are visited sequentially by one bounded worker.
+                        for request in job.requests {
+                            let result = reader
+                                .read(&request, &job.cancel, &mut |batch| {
+                                    !job.cancel.load(Ordering::Acquire) && send(Update::Batch(batch))
+                                })
+                                .map_err(|error| error.to_string());
+                            if result.is_err()
+                                && !send(Update::Discard(Location { source: request.source.id, path: request.path }))
+                            {
+                                return;
+                            }
+                            if !send(Update::Finished(result)) {
+                                return;
+                            }
                         }
                     }
                 })
@@ -140,14 +172,60 @@ impl Browser {
         }
         Ok(Self {
             sources: Vec::new(),
-            view: View { location: None, entries: Vec::new(), phase: Phase::Idle, summary: None, revision: 0 },
+            view: View {
+                location: None,
+                entries: Vec::new(),
+                phase: Phase::Idle,
+                summary: None,
+                revision: 0,
+                collection: None,
+                contributors: HashMap::new(),
+                errors: Vec::new(),
+            },
             jobs: Some(job_tx),
             events: event_rx,
             cancel: None,
             generation: 0,
             last_request: 0,
             next_source: 1,
+            library: LibrarySettings::default(),
+            settings_path: None,
+            settings_pending: false,
+            settings_status: None,
+            locations: Vec::new(),
+            history: Vec::new(),
+            pending: 0,
         })
+    }
+
+    /// Restore validated source definitions without touching their filesystems.
+    pub fn configure(&mut self, settings: LibrarySettings, path: PathBuf) -> Result<(), EngineError> {
+        settings.validate().map_err(EngineError)?;
+        self.next_source = settings.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
+        self.sources = settings.sources.clone();
+        self.library = settings;
+        self.settings_path = Some(path);
+        Ok(())
+    }
+    /// Current persisted library definitions (not temporary Open folder sources).
+    pub fn library(&self) -> &LibrarySettings {
+        &self.library
+    }
+    /// Save progress or the last persistence result.
+    pub fn settings_status(&self) -> Option<&str> {
+        self.settings_status.as_deref()
+    }
+    /// Whether the bounded settings write is still in flight.
+    pub fn settings_pending(&self) -> bool {
+        self.settings_pending
+    }
+    /// Whether parent navigation is available in the current view.
+    pub fn can_up(&self) -> bool {
+        if self.view.collection.is_some() {
+            !self.history.is_empty()
+        } else {
+            self.view.location.as_ref().is_some_and(|l| l.path.parent().is_some())
+        }
     }
 
     /// Explicit sources only; startup never scans the home directory automatically.
@@ -171,6 +249,55 @@ impl Browser {
         }
         self.last_request = request_id;
         match command {
+            Command::SaveLibrary(settings) => {
+                settings.validate().map_err(EngineError)?;
+                if self.settings_pending {
+                    return Err(EngineError("A settings save is already pending".into()));
+                }
+                let path = self
+                    .settings_path
+                    .clone()
+                    .ok_or_else(|| EngineError("Library settings storage is unavailable".into()))?;
+                let job = Job {
+                    generation: 0,
+                    requests: Vec::new(),
+                    save: Some((path, settings)),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                };
+                self.jobs
+                    .as_ref()
+                    .ok_or_else(|| EngineError("Workers stopped".into()))?
+                    .try_send(job)
+                    .map_err(|_| EngineError("Workers busy; retry saving shortly".into()))?;
+                self.settings_pending = true;
+                self.settings_status = Some("Saving library settings…".into());
+                Ok(())
+            }
+            Command::BrowseCollection(id) => {
+                let members = self
+                    .library
+                    .collections
+                    .iter()
+                    .find(|c| c.id == id)
+                    .ok_or_else(|| EngineError("Unknown collection".into()))?
+                    .members
+                    .clone();
+                self.start(members, Some(id))?;
+                self.history.clear();
+                Ok(())
+            }
+            Command::Up => {
+                if let Some(previous) = self.history.last().cloned().filter(|_| self.view.collection.is_some()) {
+                    self.start(previous, self.view.collection)?;
+                    self.history.pop();
+                    Ok(())
+                } else {
+                    let location =
+                        self.view.location.as_ref().ok_or_else(|| EngineError("Open a folder first".into()))?;
+                    let path = location.path.parent().ok_or_else(|| EngineError("Already at root".into()))?;
+                    self.navigate(Location { source: location.source, path })
+                }
+            }
             Command::AddSource(root) => {
                 if !root.is_absolute() {
                     return Err(EngineError("Choose an absolute folder path".into()));
@@ -188,7 +315,7 @@ impl Browser {
                         .checked_add(1)
                         .ok_or_else(|| EngineError("Source identity limit reached".into()))?;
                     let label = display_name(root.file_name().unwrap_or(root.as_os_str()));
-                    self.sources.push(Source { id, root, label });
+                    self.sources.push(Source { id, root, label, nfs_remote: None });
                     id
                 };
                 self.navigate(Location { source: id, path: RelativePath::default() })
@@ -204,11 +331,30 @@ impl Browser {
                         "Only real folders can be opened in this version; links are not followed".into(),
                     ));
                 }
-                self.navigate(Location { source: id.source, path: id.path })
+                if let Some(collection) = self.view.collection {
+                    let ids = self
+                        .view
+                        .contributors
+                        .get(&id)
+                        .cloned()
+                        .ok_or_else(|| EngineError("Folder contributors unavailable".into()))?;
+                    let locations = ids.into_iter().map(|id| Location { source: id.source, path: id.path }).collect();
+                    let previous = self.locations.clone();
+                    if self.history.len() >= 256 {
+                        return Err(EngineError("Navigation depth limit reached".into()));
+                    }
+                    self.start(locations, Some(collection))?;
+                    self.history.push(previous);
+                    Ok(())
+                } else {
+                    self.navigate(Location { source: id.source, path: id.path })
+                }
             }
             Command::Refresh => {
-                let location = self.view.location.clone().ok_or_else(|| EngineError("Open a source first".into()))?;
-                self.navigate(location)
+                if self.locations.is_empty() {
+                    return Err(EngineError("Open a source first".into()));
+                }
+                self.start(self.locations.clone(), self.view.collection)
             }
             Command::Cancel => {
                 if let Some(cancel) = &self.cancel {
@@ -224,15 +370,24 @@ impl Browser {
     }
 
     fn navigate(&mut self, location: Location) -> Result<(), EngineError> {
-        let source = self.source(location.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+        self.start(vec![location], None)?;
+        self.history.clear();
+        Ok(())
+    }
+
+    fn start(&mut self, locations: Vec<Location>, collection: Option<u64>) -> Result<(), EngineError> {
+        let requests: Result<Vec<_>, _> = locations
+            .iter()
+            .map(|location| {
+                let source =
+                    self.source(location.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+                Ok(ReadRequest { source, path: location.path.clone() })
+            })
+            .collect();
         let generation =
             self.generation.checked_add(1).ok_or_else(|| EngineError("Request generation limit reached".into()))?;
         let cancel = Arc::new(AtomicBool::new(false));
-        let job = Job {
-            generation,
-            request: ReadRequest { source, path: location.path.clone() },
-            cancel: Arc::clone(&cancel),
-        };
+        let job = Job { generation, requests: requests?, save: None, cancel: Arc::clone(&cancel) };
         let sender = self.jobs.as_ref().ok_or_else(|| EngineError("Directory workers have stopped".into()))?;
         sender.try_send(job).map_err(|error| match error {
             mpsc::TrySendError::Full(_) => {
@@ -244,7 +399,12 @@ impl Browser {
             previous.store(true, Ordering::Release);
         }
         self.generation = generation;
-        self.view.location = Some(location);
+        self.view.location = if collection.is_none() { locations.first().cloned() } else { None };
+        self.pending = locations.len();
+        self.locations = locations;
+        self.view.collection = collection;
+        self.view.contributors.clear();
+        self.view.errors.clear();
         self.view.entries.clear();
         self.view.phase = Phase::Loading;
         self.view.summary = None;
@@ -256,7 +416,35 @@ impl Browser {
     pub fn poll(&mut self) -> bool {
         for _ in 0..64 {
             let Ok(event) = self.events.try_recv() else { return false };
-            if event.generation != self.generation {
+            if let Update::Saved(result) = event.result {
+                self.settings_pending = false;
+                match result {
+                    Ok(settings) => {
+                        // Invalidate current scans before changing source identities/roots.
+                        if let Some(cancel) = &self.cancel {
+                            cancel.store(true, Ordering::Release);
+                        }
+                        self.view.phase = Phase::Idle;
+                        self.view.location = None;
+                        self.view.collection = None;
+                        self.view.entries.clear();
+                        self.view.contributors.clear();
+                        self.view.errors.clear();
+                        self.view.summary = None;
+                        self.locations.clear();
+                        self.history.clear();
+                        self.sources = settings.sources.clone();
+                        self.next_source = self.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
+                        self.library = settings;
+                        self.settings_status =
+                            Some("Library settings saved. Choose a source or collection to browse.".into());
+                        self.bump_revision();
+                    }
+                    Err(error) => self.settings_status = Some(error),
+                }
+                continue;
+            }
+            if event.generation != self.generation || self.view.phase == Phase::Idle {
                 continue;
             }
             if self.view.phase == Phase::Cancelled {
@@ -265,18 +453,45 @@ impl Browser {
             match event.result {
                 Update::Batch(batch) => {
                     let room = archiv_platform::MAX_ENTRIES.saturating_sub(self.view.entries.len());
+                    if batch.len() > room {
+                        self.view.summary.get_or_insert_with(ReadSummary::default).truncated = true;
+                    }
                     self.view.entries.extend(batch.into_iter().take(room));
                 }
+                Update::Discard(location) => {
+                    self.view.entries.retain(|e| {
+                        e.id.source != location.source || e.id.path.parent().as_ref() != Some(&location.path)
+                    });
+                }
                 Update::Finished(result) => {
-                    sort_entries(&mut self.view.entries);
+                    self.pending = self.pending.saturating_sub(1);
                     match result {
                         Ok(summary) => {
-                            self.view.phase = if summary.cancelled { Phase::Cancelled } else { Phase::Ready };
-                            self.view.summary = Some(summary);
+                            let total = self.view.summary.get_or_insert_with(ReadSummary::default);
+                            total.entries = total.entries.saturating_add(summary.entries);
+                            total.skipped = total.skipped.saturating_add(summary.skipped);
+                            total.truncated |= summary.truncated;
+                            total.cancelled |= summary.cancelled;
                         }
-                        Err(error) => self.view.phase = Phase::Failed(error),
+                        Err(error) => self.view.errors.push(error),
+                    }
+                    if self.pending == 0 {
+                        sort_entries(&mut self.view.entries);
+                        if self.view.collection.is_some() {
+                            self.view.contributors = merge_directories(&mut self.view.entries);
+                        }
+                        self.view.phase = if self.view.summary.as_ref().is_some_and(|s| s.cancelled) {
+                            Phase::Cancelled
+                        } else if self.view.errors.is_empty() {
+                            Phase::Ready
+                        } else {
+                            Phase::Failed(
+                                "Some locations could not be read; results are incomplete. See source errors.".into(),
+                            )
+                        };
                     }
                 }
+                Update::Saved(_) => {}
             }
             self.bump_revision();
         }
@@ -351,6 +566,122 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_ne!(browser.view.phase, Phase::Loading, "worker failed to finish");
+    }
+
+    fn fixture_library(root: &std::path::Path) -> LibrarySettings {
+        LibrarySettings {
+            version: 1,
+            sources: (1..=4)
+                .map(|id| Source {
+                    id: SourceId(id),
+                    root: root.join(format!("disk{id}")),
+                    label: format!("Disk {id}"),
+                    nfs_remote: None,
+                })
+                .collect(),
+            collections: vec![archiv_core::library::Collection {
+                id: 1,
+                label: "Movies".into(),
+                members: (1..=4)
+                    .map(|id| Location { source: SourceId(id), path: RelativePath::new("movies").unwrap() })
+                    .collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn four_disk_merge_is_optional_recursive_and_preserves_file_collisions() {
+        let root = tempfile::tempdir().unwrap();
+        for id in 1..=4 {
+            std::fs::create_dir_all(root.path().join(format!("disk{id}/movies/Title/Extras"))).unwrap();
+            std::fs::write(root.path().join(format!("disk{id}/movies/Title/movie.mkv")), format!("disk {id}")).unwrap();
+        }
+        let mut browser = browser();
+        browser.configure(fixture_library(root.path()), root.path().join("library.json")).unwrap();
+        assert_eq!(browser.view.phase, Phase::Idle);
+        assert!(browser.view.entries.is_empty());
+        browser.execute(1, Command::BrowseCollection(1)).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.entries.len(), 1);
+        let title = browser.view.entries[0].id.clone();
+        assert_eq!(browser.view.contributors[&title].len(), 4);
+        assert!(browser.view.location.is_none());
+        browser.execute(2, Command::Open(title)).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.entries.len(), 5); // one Extras folder and four separate files
+        let files: HashSet<_> =
+            browser.view.entries.iter().filter(|e| e.kind == EntryKind::File).map(|e| e.id.clone()).collect();
+        assert_eq!(files.len(), 4);
+        let extras = browser.view.entries.iter().find(|e| e.kind == EntryKind::Directory).unwrap().id.clone();
+        assert_eq!(browser.view.contributors[&extras].len(), 4);
+        browser.execute(3, Command::Open(extras)).unwrap();
+        settle(&mut browser);
+        assert!(browser.view.entries.is_empty());
+        browser.execute(4, Command::Up).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.entries.len(), 5);
+        browser.execute(5, Command::Up).unwrap();
+        settle(&mut browser);
+        assert!(!browser.can_up());
+        browser
+            .execute(
+                6,
+                Command::Navigate(Location { source: SourceId(1), path: RelativePath::new("movies/Title").unwrap() }),
+            )
+            .unwrap();
+        settle(&mut browser);
+        assert!(browser.view.collection.is_none());
+        assert_eq!(browser.view.entries.len(), 2);
+        for id in 1..=4 {
+            assert_eq!(
+                std::fs::read_to_string(root.path().join(format!("disk{id}/movies/Title/movie.mkv"))).unwrap(),
+                format!("disk {id}")
+            );
+        }
+    }
+
+    #[test]
+    fn unavailable_contributor_is_reported_and_refresh_recovers() {
+        let root = tempfile::tempdir().unwrap();
+        for id in 1..=3 {
+            std::fs::create_dir_all(root.path().join(format!("disk{id}/movies/Title"))).unwrap();
+        }
+        let mut browser = browser();
+        browser.configure(fixture_library(root.path()), root.path().join("library.json")).unwrap();
+        browser.execute(1, Command::BrowseCollection(1)).unwrap();
+        settle(&mut browser);
+        assert!(matches!(browser.view.phase, Phase::Failed(_)));
+        assert_eq!(browser.view.errors.len(), 1);
+        assert_eq!(browser.view.entries.len(), 1);
+        std::fs::create_dir_all(root.path().join("disk4/movies/Title")).unwrap();
+        browser.execute(2, Command::Refresh).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.phase, Phase::Ready);
+        assert_eq!(browser.view.contributors.values().next().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn settings_save_is_deduplicated_and_restart_remains_idle() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings/library.json");
+        let mut browser = browser();
+        browser.configure(LibrarySettings::default(), path.clone()).unwrap();
+        let mut commands = FrameCommands::default();
+        let settings = fixture_library(root.path());
+        commands.dispatch(1, Command::SaveLibrary(settings.clone()), &mut browser).unwrap();
+        commands.dispatch(1, Command::SaveLibrary(settings.clone()), &mut browser).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while browser.settings_pending() && Instant::now() < deadline {
+            browser.poll();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!browser.settings_pending());
+        assert_eq!(browser.library(), &settings);
+        let saved = archiv_platform::library::load(&path).unwrap();
+        let mut restarted = super::tests::browser();
+        restarted.configure(saved, path).unwrap();
+        assert_eq!(restarted.view.phase, Phase::Idle);
+        assert_eq!(restarted.sources().len(), 4);
     }
 
     #[test]

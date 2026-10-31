@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: M1 in progress; first native read-only browsing slice implemented.
+Status: M1 polish remains; first M2 mounted-source/optional-collection slice implemented.
 Updated: 2026-10-31.
 
 ## M0 — preparation (complete)
@@ -17,16 +17,19 @@ Updated: 2026-10-31.
   stale-result rejection and headless `--list`; no implicit startup scan.
 - Native X11 appearance and egui interaction evidence are recorded in docs/validation.md.
 - Remaining: target fonts/icons, desktop scale/motion discovery, broader keyboard/native Wayland
-  acceptance and mount identity checks before claiming NAS support.
+  acceptance. Configured NFS mount checks are implemented in the first M2 slice.
 - Verify font/icon redistribution rights and evaluate shared widget needs before adding dependencies.
 - Acceptance: synthetic directory fixtures; no mutation route; long/non-UTF-8 labels; visible errors;
   native screenshot/interaction checks. Cold startup performs no unrequested NAS scan.
 
-## M2 — merged views and mounted NAS sources (not started)
+## M2 — merged views and mounted NAS sources (in progress)
 
-- Exact-name directory merging, explicit aliases, duplicate-location display and source filters.
-- NFS mount identity/availability checks, stale/offline states, incremental cached search.
-- mpv launch for an explicit physical file. No network traversal on the UI thread.
+- Implemented: optional exact-name recursive directory merging, duplicate-location display,
+  source browsing, native library settings and atomic versioned persistence.
+- Implemented: configured NFS mount/export/descriptor checks and explicit partial-source errors.
+- Remaining: explicit aliases, source filters within collections and incremental cached search.
+- NFS mounts/exports remain operating-system administration; no automatic NAS connection setup.
+- Remaining: mpv launch for an explicit physical file. No network traversal on the UI thread.
 - Acceptance: collisions across four synthetic sources stay distinct; missing mounts fail closed;
   cancelled scans cannot overwrite newer views. Do not benchmark using real library mutations.
 
@@ -63,3 +66,7 @@ No implied commitment to a FUSE filesystem, multi-platform ports or automatic NF
 
 - 2026-10-31: implemented the first read-only native browser slice, headless listing, bounded
   worker engine and synthetic domain/platform/UI tests. No NAS access or mutation enabled.
+
+- 2026-10-31: added saved mounted/local sources, optional merged collections, recursive browsing,
+  per-location errors and NFS mount checks. Native settings and synthetic four-disk evidence added.
+  Read-only NAS layout inspection only; no server or PC exports/mounts were configured.

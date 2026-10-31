@@ -1,17 +1,33 @@
 //! Byte-preserving identities and read-only browsing models. No IO or GUI dependencies.
 
+pub mod library;
+
+use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::time::SystemTime;
 
 /// Identity of an explicitly registered source in this session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceId(pub u64);
 
 /// A lexical, source-relative path containing only ordinary name components.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "PathBuf", into = "PathBuf")]
 pub struct RelativePath(PathBuf);
+
+impl TryFrom<PathBuf> for RelativePath {
+    type Error = InvalidRelativePath;
+    fn try_from(path: PathBuf) -> Result<Self, Self::Error> {
+        Self::new(path)
+    }
+}
+impl From<RelativePath> for PathBuf {
+    fn from(path: RelativePath) -> Self {
+        path.0
+    }
+}
 
 /// A path is not a safe source-relative browsing location.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,7 +71,8 @@ impl RelativePath {
 }
 
 /// An explicit physical root; this is not a virtual collection or security permission.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Source {
     /// Stable source identity within the session.
     pub id: SourceId,
@@ -63,10 +80,14 @@ pub struct Source {
     pub root: PathBuf,
     /// Display label, never used for filesystem operations.
     pub label: String,
+    /// Expected NFS server:/export; root must be its exact mount point.
+    #[serde(default)]
+    pub nfs_remote: Option<String>,
 }
 
 /// A directory within one registered physical source.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Location {
     /// Owning source.
     pub source: SourceId,
