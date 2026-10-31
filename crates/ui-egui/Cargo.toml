@@ -1,0 +1,14 @@
+[package]
+name = "archiv-ui-egui"
+description = "Planned native egui interface. No GUI code or toolkit dependency is present yet."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+archiv-core.workspace = true
+archiv-engine.workspace = true

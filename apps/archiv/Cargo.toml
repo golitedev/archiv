@@ -1,0 +1,15 @@
+[package]
+name = "archiv"
+description = "Archiv native Linux file manager (preparation scaffold)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+archiv-engine.workspace = true
+archiv-platform.workspace = true
+archiv-ui-egui.workspace = true

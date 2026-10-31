@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["apps/archiv", "crates/core", "crates/platform", "crates/engine", "crates/ui-egui"]
+default-members = ["apps/archiv"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "0BSD"
+
+[workspace.dependencies]
+archiv-core = { path = "crates/core" }
+archiv-platform = { path = "crates/platform" }
+archiv-engine = { path = "crates/engine" }
+archiv-ui-egui = { path = "crates/ui-egui" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+
+# Preserve normal error unwinding; do not turn worker failures into process aborts.
+[profile.release]
+lto = "thin"

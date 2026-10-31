@@ -1,0 +1,10 @@
+[package]
+name = "archiv-core"
+description = "Domain identities, logical library views and deterministic policy rules. No IO or UI is implemented."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
