@@ -1,4 +1,4 @@
-//! Linux directory enumeration, settings and explicit recovery/process adapters.
+//! Linux directory enumeration, settings and explicit file/process adapters.
 
 pub mod library;
 mod mount;
@@ -84,12 +84,6 @@ impl DirectoryReader for LocalDirectoryReader {
             summary.cancelled = true;
             return Ok(summary);
         }
-        if request.path.as_path().components().any(|c| c.as_os_str() == archiv_core::actions::RECOVERY_DIR) {
-            return Err(ReadError {
-                path: request.source.root.clone(),
-                error: io::Error::other("Recovery storage is not a browsing location"),
-            });
-        }
         let physical = request.source.root.join(request.path.as_path());
         let failure = |error: io::Error| ReadError { path: physical.clone(), error };
         let flags = rustix::fs::OFlags::RDONLY
@@ -147,9 +141,6 @@ impl DirectoryReader for LocalDirectoryReader {
                 continue;
             };
             let name = item.file_name();
-            if name == archiv_core::actions::RECOVERY_DIR {
-                continue;
-            }
             let Ok(path) = request.path.child(&name) else {
                 summary.skipped = summary.skipped.saturating_add(1);
                 continue;

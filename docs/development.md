@@ -1,6 +1,6 @@
 # Development
 
-Status: configurable native browser with opt-in recovery, updated 2026-10-31.
+Status: configurable native browser with opt-in file actions, updated 2026-10-31.
 
 ## Toolchain and execution
 
@@ -52,7 +52,7 @@ Run all user intents through the headless Browser and shared FrameCommands admis
 Never introduce IO into a rendering frame. Worker queues, event payloads and total listings are
 bounded. A cancelled syscall may remain blocked in the kernel; do not join it on the UI thread
 or spawn unlimited replacements. Read metadata without following links. Do not restore navigation
-from persisted paths automatically. Recovery/restore writes use the typed engine/descriptor-relative platform adapter described in
+from persisted paths automatically. Delete/rename/copy writes use the typed engine/descriptor-relative platform adapter described in
 file-actions.md. New mutation capabilities still require the safety evidence in safety.md; no direct
 filesystem or process calls belong in widgets.
 

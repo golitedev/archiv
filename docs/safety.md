@@ -1,105 +1,27 @@
-# Deletion, recovery and permission design
+# File-action safety
 
-Status: opt-in recovery/restore implemented. Transfers, purge and permission editing remain requirements only. Updated: 2026-10-31.
+File changes require explicit source configuration. The core `WritePolicy` denies roots,
+protected folders/ancestors/subtrees, unsupported file kinds and targets outside the allowlist.
+The engine shares these decisions with menus and shortcuts. UI button states never grant rights.
 
-## Enforcement scope
+Platform operations use held Linux descriptors, openat2 with no-follow/beneath/no-cross-mount
+resolution, observed inode/change-time validation and configured NFS export checks. Source and
+collection root guards apply across overlapping source definitions. No symlink traversal, silent
+overwrite, destination fallback, shell interpolation, recursive std::fs::remove_dir_all, sudo or
+permission escalation is used. Source policies and file operations stay outside rendering.
 
-Archiv rules protect requests executed by Archiv. They do not intercept `rm`, Dolphin, writable
-NFS access, containers, SSH transfers or NAS applications operating outside Archiv. Root ownership
-of `tv` does not protect writable show contents from recursive deletion. A read-only source in
-Archiv is not a read-only NFS export. Display these distinctions honestly.
+Delete is permanent. A single-use confirmation names its complete bounded physical scope.
+Execution re-enumerates that scope before unlinking; changed scope fails before the first deletion.
+Directories are removed only when empty. Partial failure/cancellation is not rollback. Copy uses
+bounded staging and NOREPLACE publication; failures retain partial data rather than silently
+cleaning up an uncertain destination. Rename also refuses existing destinations.
 
-Global enforcement would need read-only exports/filesystem permissions plus a restricted NAS
-helper, a protocol-specific mechanism, or a different storage layer. Snapshots/backups are separate
-recovery systems. Archiv configures none of them. Never promise that an app-only rule protects
-against arbitrary NAS commands or a compromised unrestricted account.
+Read [file actions](file-actions.md) for exact permissions, limits, staging behavior, the final
+filename concurrency window and durability limits. App rules do not constrain external programs
+or other NAS clients. Do not claim protection against arbitrary concurrent writers or backups.
 
-## Policy model
-
-Start deny-by-default for mutation until valid explicit configuration exists. Policy is evaluated
-in the core/engine, never just in a button. A future rule set may specify:
-
-- Source capability: browse/copy/play, upload, recover, restore, permission editing; purge off.
-- Protected structural paths (`data`, `media`, category roots) and forbidden virtual-node targets.
-- Explicit allowed physical roots, per-operation selection count and total byte limits.
-- Unknown size/type, unavailable source or ambiguous merged target: deny pending resolution.
-- Confirmation requirements including physical paths, source badges, sizes and the recovery action.
-- Recovery destination per source filesystem; no implicit cross-filesystem copy fallback.
-
-Deny wins over allow, including ancestor/overlap rules. Specify exact subtree semantics in the
-schema and tests before implementation. Reject contradictory/unknown rules rather than silently
-weakening them. A protected parent is a structural target restriction, not a blanket deny of
-intentional operations on permitted descendants. Conversely, deleting a parent cannot evade
-restrictions on any selected descendant. Virtual collections are not physical operation targets.
-
-## Recovery protocol
-
-Delete means "move to recovery"; permanent purge is a separate capability and is not in the first
-mutation milestone. For an explicit physical item, reserve a unique recovery identity on the same
-filesystem, durably record the source/destination and operation state, perform a descriptor-relative
-rename without replacing an existing item, then commit the journal state. Account for crashes
-between each step and reconcile from actual filesystem state. Never claim rename+journal is a
-single atomic transaction. Verify server/filesystem durability semantics, especially over NFS.
-
-Recovery lives outside library discovery and is not accessible to ordinary app deletion targets.
-Store the original source ID/path, operation time, identities and result. A default retention
-expiry must not silently purge data. Refuse a missing or unsafe recovery location. Retained data
-continues consuming capacity; hard-linked or open files may change through other writable aliases,
-so a moved inode is not an immutable backup or a snapshot.
-
-Restore checks destination conflicts; never overwrite a newly created title. Restore/purge requires
-explicit item identity and permissions, with clear previews. Purge cannot follow links out of its
-recovery store. Persistent journals contain sensitive paths; keep them user-private and out of Git.
-
-## Path confinement and mount failure
-
-Lexical `..` rejection and canonicalization are useful validation, but not enough against races.
-Use safe descriptor-relative APIs and no-follow/constrained resolution at execution, checking both
-source and destination parents. Validate component boundaries, aliases, symlinks, bind mounts,
-replaced parents, hardlinks and nested mount points. A preview can become stale immediately.
-
-NFS source availability must be checked against expected mount identity and configured source
-location. A folder that remains after unmount is not the NAS. Never create recovery or transfer
-output there as a fallback. Cross-disk moves are copy/verify/recover jobs, not same-filesystem renames.
-Mount and remote-server identity do not remove the need for per-entry revalidation.
-
-## Transfers and external processes
-
-Copy first, then verify against a quiescent/revalidated source before any source recovery action.
-Define verification and durability precisely before implementing Move. Cancellation or failed
-verification leaves the source intact. Partial destination data must have a documented retry and
-cleanup policy; never remove preexisting destination data as generic cleanup.
-
-Invoke external rsync/mpv/SSH using typed arguments and proper remote-argument protection, not
-interpolated shell strings. Filenames with whitespace, newlines, leading `-`, shell syntax and
-non-UTF-8 bytes are test cases. Do not assume local `Command::arg` alone prevents remote-shell
-interpretation. Do not add rsync `--delete`, `--remove-source-files` or `--inplace` implicitly.
-SSH credentials may allow writes even when NFS is read-only; report this separate capability.
-
-## Permission editing
-
-Show observed UID/GID/mode and effective operation results separately. UID 1000 on one system does
-not automatically prove authority on another. Do not recursively chown/chmod for convenience,
-request root at startup or relax permissions to make a failed action pass. Future permission editing
-needs its own plan, limits, validation and authorization; recovery cannot generally undo permissions
-changed by another program. Effective filesystem rights are always the final authority.
-
-## Required mutation evidence
-
-Before enabling writes: synthetic tests of denied structural roots, merged-target ambiguity,
-ancestor/child selections, path escapes, symlink swaps, stale identities, missing mounts,
-non-UTF-8 paths, full disk, read-only exports, name collisions, disconnected NFS, partial transfer,
-journal interruption and restore conflicts. Use injected failures and temporary filesystems;
-never use the real NAS library as a test fixture. Opt-in recovery/restore is implemented; broader NAS/transfer fault acceptance remains incomplete.
-
-## Current implementation evidence and limits
-
-The implemented JSON schema contains source-specific enabled/allowed/protected recovery policies.
-Source/collection roots and recovery storage are always protected; virtual directories have no
-mutation target. There is no recursive unlink, purge, cross-device fallback or permission editor.
-Prepared/completed manifests retain raw filename bytes and filesystem/root/object identities.
-Synthetic tests exercise the policy, stale/unsafe paths, missing mounts, collision refusal, private
-storage, permission failure, interrupted records and persistence errors before/after rename.
-These are not live NFS/server power-loss tests. The public behavior, recovery state handling and
-remaining final-syscall concurrency limit are documented in file-actions.md. Filesystem permissions
-and other clients remain outside Archiv policy enforcement.
+Regression fixtures cover policy denials, protected ancestors, stale snapshots, source/parent
+changes, links, missing mounts, collisions, cancellation, literal/non-UTF-8 paths and replayed
+confirmation. Never run development deletion experiments on the real NAS library. Live writable
+NFS/disconnect and power-loss acceptance remains incomplete. Transfers over SSH and permission
+editing are future work and must use this same engine/policy boundary.

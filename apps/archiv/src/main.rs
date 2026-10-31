@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const HELP: &str = "Archiv — native file manager\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH [--search QUERY]\n  archiv --list-collection ID [--library FILE] [--search QUERY]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nPreferences configures sources, collections, applications and recovery safeguards. Recovery is disabled until configured. Linux mounts NFS separately. No permanent deletion or transfers.";
+const HELP: &str = "Archiv — native file manager\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH [--search QUERY]\n  archiv --list-collection ID [--library FILE] [--search QUERY]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nPreferences configures sources, collections, applications and file-change safeguards. Permanent delete, rename and pasted copies are disabled until configured. Delete requires confirmation. Linux mounts NFS separately.";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);

@@ -73,11 +73,11 @@ without replacing it with defaults. A saved library never starts a scan until ex
 `archiv --list-collection ID --library /absolute/file.json` uses the same engine without a GUI.
 Output lists physical contributors with their source labels/paths; incomplete listings return an
 error. The total visible collection is bounded at 50,000 physical entries before folder grouping,
-with a visible truncation warning. There is no persistent search index or transfer. Applications and opt-in recovery are described in file-actions.md.
+with a visible truncation warning. There is no persistent search index or transfer. Applications and opt-in file changes are described in file-actions.md.
 
 ## Writable sources and deployment boundary
 
-Browsing works with read-only exports/mounts. Opt-in recovery additionally requires writable NFS
+Browsing works with read-only exports/mounts. File changes additionally require writable NFS
 access, directory-rename support and reliable server/filesystem sync behavior. Only enable writable
 access after choosing the permitted client, reviewing existing NAS permissions and validating a
 synthetic test folder. A writable mount also permits other applications to write within their own

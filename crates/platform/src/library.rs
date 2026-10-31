@@ -52,7 +52,7 @@ mod tests {
         let config: LibrarySettings =
             serde_json::from_str(include_str!("../../../examples/archiv.example.json")).unwrap();
         config.validate().unwrap();
-        assert!(config.recovery.iter().all(|policy| !policy.enabled));
+        assert!(config.writes.iter().all(|policy| !policy.enabled));
         assert!(config.openers.program(std::path::Path::new("file.txt")).is_none());
     }
     #[test]

@@ -25,7 +25,7 @@ not establish that the same alias works on the owner's Arch PC.
 ## 004 — engine policy plus explicit enforcement boundaries
 
 Core rules and engine execution are headless. Default future writes off; deletion goes to
-same-filesystem recovery after policy/revalidation. These rules do not protect external writers.
+permanent deletion only after policy/revalidation and explicit physical confirmation. These rules do not protect external writers.
 A restricted NAS helper remains an optional later decision, not an implied deployment task.
 
 ## 005 — one Archiv design system

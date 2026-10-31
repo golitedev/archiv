@@ -10,7 +10,7 @@ These rules define Archiv's engineering, interface and data-safety requirements.
   Rust owns product code and build tooling; no handwritten JS/TS, Electron or webview frontend.
 - Use maintained egui/eframe releases for the UI. Toolkit forks and vendored patches require
   a documented need; do not add them as part of routine scaffolding.
-- Native browsing, optional mounted-source collections and opt-in recovery slices are implemented.
+- Native browsing, optional mounted-source collections and opt-in file actions are implemented.
   Follow the user's requested slice; ROADMAP tracks remaining UI, NFS acceptance and transfer work.
   Never present planned behavior as shipped. Update ROADMAP honestly.
 - Never run development experiments on the user's real NAS library. Use temporary synthetic
@@ -52,8 +52,8 @@ Follow `docs/architecture.md` and `docs/safety.md`.
 - All user actions must be callable and testable through the engine without opening the GUI.
   Future CLI/automation adapters reuse that engine. No hidden side-effect route from widgets.
 - Physical source identity is preserved through merging, selection, sorting, filtering, transfers
-  and recovery. Identical names do not imply identical files. Never automatically merge on disk.
-- Default future mutation behavior is deny-until-configured; Delete requests recovery, not purge.
+  and file actions. Identical names do not imply identical files. Never automatically merge on disk.
+- Mutation behavior is deny-until-configured; Delete is permanent and requires an explicit physical preview.
   Never infer permission from a button state, path prefix, ownership display or successful scan.
 - Validate and revalidate targets at execution. Path traversal, symlinks, disappearing mounts,
   stale plans and races must fail closed. Canonicalize-then-prefix-check alone is not a confinement
@@ -79,7 +79,7 @@ Follow `docs/architecture.md` and `docs/safety.md`.
 - Recover from worker failure/lock poisoning without performing fallback deletions. Do not swallow
   errors or use panic-catching as the primary error model. Keep the default unwind strategy.
 - No silent overwrite, purge, permission escalation or destination fallback when a mount is absent.
-  Persist settings/journals atomically with documented durability; crashes must not orphan data.
+  Persist settings atomically with documented durability; crashes must not orphan data.
 - Every crash, confinement or data-loss fix needs a meaningful synthetic regression test. Verify
   that the regression actually fails without the fix. Use a calendar library for date conversion
   when dates are introduced; use monotonic time for progress deadlines and animation.

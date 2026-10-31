@@ -1,9 +1,9 @@
-//! Headless, bounded read-only browsing with cancellation and stale-result rejection.
+//! Headless, bounded browsing and explicit physical file actions.
 
-use archiv_core::actions::{ProtectedPath, RecoveryPolicy};
+use archiv_core::actions::{ProtectedPath, WritePolicy};
 use archiv_core::library::{LibrarySettings, merge_directories};
 use archiv_core::{Entry, EntryId, EntryKind, Location, RelativePath, Source, SourceId, display_name, sort_entries};
-use archiv_platform::operations::{self, RecoveryPlan, RecoveryRecord};
+use archiv_platform::operations::{self, DeletePlan};
 use archiv_platform::{DirectoryReader, ReadRequest, ReadSummary};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -32,16 +32,20 @@ pub enum Command {
     Expand(EntryId),
     /// Open an explicit regular file with its configured external application.
     Launch(EntryId),
-    /// Build an immutable physical recovery preview; never mutate here.
-    PreviewRecovery(EntryId),
-    /// Execute one previously previewed recovery move exactly once.
-    ConfirmRecovery(u64),
+    /// Build an immutable physical deletion preview; never mutate here.
+    PreviewDelete(EntryId),
+    /// Execute one previously previewed permanent deletion exactly once.
+    ConfirmDelete(u64),
     /// Dismiss a preview without executing it.
-    DismissRecovery,
-    /// Explicitly inspect this source's recovery records.
-    ListRecovery(SourceId),
-    /// Restore one explicitly selected recovery job without overwriting.
-    Restore(SourceId, String),
+    DismissDelete,
+    /// Remember one explicit physical item in the session copy clipboard.
+    Copy(EntryId),
+    /// Copy that clipboard item into an explicit physical directory.
+    Paste(Location),
+    /// Rename one observed physical item in its current parent.
+    Rename(EntryId, std::ffi::OsString),
+    /// Copy an exact UTF-8 physical path as text (never an operation path).
+    CopyPath(EntryId),
     /// Re-enumerate the current location.
     Refresh,
     /// Explicit bounded recursive name search below the currently opened locations.
@@ -104,31 +108,40 @@ impl fmt::Display for EngineError {
 impl std::error::Error for EngineError {}
 
 enum Action {
-    Prepare(u64, Source, Entry, RecoveryPolicy, Vec<(Source, ProtectedPath)>),
-    Recover(RecoveryPlan),
-    List(Source),
-    Restore(Source, RecoveryPolicy, String, Vec<(Source, ProtectedPath)>),
+    Prepare(u64, Source, Entry, WritePolicy, Vec<(Source, ProtectedPath)>),
+    Delete(DeletePlan),
+    Rename(Source, Entry, std::ffi::OsString, WritePolicy, Vec<(Source, ProtectedPath)>),
+    Copy(Source, Entry, Source, RelativePath, WritePolicy, Vec<(Source, ProtectedPath)>),
     Launch(Source, Entry, String),
 }
 enum ActionResult {
-    Preview(Box<RecoveryPlan>),
+    Preview(Box<DeletePlan>),
     Done(String),
     Changed(String),
-    Records(SourceId, Vec<RecoveryRecord>),
 }
-fn perform(action: Action, children: &mut Vec<operations::Application>) -> Result<ActionResult, String> {
+fn perform(
+    action: Action,
+    cancel: &AtomicBool,
+    children: &mut Vec<operations::Application>,
+) -> Result<ActionResult, String> {
+    if cancel.load(Ordering::Acquire) {
+        return Err("Operation cancelled before execution".into());
+    }
     match action {
         Action::Prepare(id, source, entry, policy, guards) => {
-            operations::prepare(id, source, entry, policy, guards).map(|plan| ActionResult::Preview(Box::new(plan)))
+            operations::prepare_delete(id, source, entry, policy, guards, cancel)
+                .map(|plan| ActionResult::Preview(Box::new(plan)))
         }
-        Action::Recover(plan) => {
-            operations::recover(&plan).map(|id| ActionResult::Changed(format!("Moved to recovery: {id}")))
+        Action::Delete(plan) => operations::delete(&plan, cancel)
+            .map(|()| ActionResult::Changed("Permanently deleted the confirmed physical items".into())),
+        Action::Rename(source, entry, name, policy, guards) => {
+            operations::rename(&source, &entry, &name, &policy, &guards)
+                .map(|()| ActionResult::Changed("Renamed the physical item".into()))
         }
-        Action::List(source) => {
-            operations::list_recovery(&source).map(|records| ActionResult::Records(source.id, records))
+        Action::Copy(source, entry, destination, folder, policy, guards) => {
+            operations::copy(&source, &entry, &destination, &folder, &policy, &guards, cancel)
+                .map(|()| ActionResult::Changed("Copy completed; source retained".into()))
         }
-        Action::Restore(source, policy, id, guards) => operations::restore(&source, &policy, &id, &guards)
-            .map(|()| ActionResult::Changed("Restored to its original physical path".into())),
         Action::Launch(source, entry, program) => {
             let mut running = Vec::new();
             for mut child in children.drain(..) {
@@ -175,7 +188,7 @@ enum Update {
     BackgroundError(String),
 }
 
-/// Two bounded workers shared by browsing, configured application launches and opt-in recovery.
+/// Two bounded workers shared by browsing, configured application launches and opt-in file actions.
 pub struct Browser {
     sources: Vec<Source>,
     view: View,
@@ -194,8 +207,10 @@ pub struct Browser {
     branches: HashMap<EntryId, Branch>,
     operation_pending: bool,
     operation_status: Option<String>,
-    recovery_preview: Option<RecoveryPlan>,
-    recovery_records: Option<(SourceId, Vec<RecoveryRecord>)>,
+    delete_preview: Option<DeletePlan>,
+    clipboard: Option<(Source, Entry)>,
+    clipboard_text: Option<String>,
+    action_cancel: Option<Arc<AtomicBool>>,
 }
 
 fn search(
@@ -322,7 +337,7 @@ impl Browser {
                             sent
                         };
                         if let Some(action) = job.action {
-                            if !send(Update::Action(perform(action, &mut children))) {
+                            if !send(Update::Action(perform(action, &job.cancel, &mut children))) {
                                 return;
                             }
                             continue;
@@ -392,8 +407,10 @@ impl Browser {
             branches: HashMap::new(),
             operation_pending: false,
             operation_status: None,
-            recovery_preview: None,
-            recovery_records: None,
+            delete_preview: None,
+            clipboard: None,
+            clipboard_text: None,
+            action_cancel: None,
         })
     }
 
@@ -459,8 +476,8 @@ impl Browser {
                 self.start_listing(self.locations.clone(), self.view.collection, Some(query))
             }
             Command::Expand(id) => self.expand(id),
-            Command::DismissRecovery => {
-                self.recovery_preview = None;
+            Command::DismissDelete => {
+                self.delete_preview = None;
                 Ok(())
             }
             Command::Launch(id) => {
@@ -477,8 +494,8 @@ impl Browser {
                     .to_owned();
                 self.action(Action::Launch(source, entry, program))
             }
-            Command::PreviewRecovery(id) => {
-                self.recovery_preview = None;
+            Command::PreviewDelete(id) => {
+                self.delete_preview = None;
                 let entry =
                     self.entry(&id).cloned().ok_or_else(|| EngineError("Selected item is no longer visible".into()))?;
                 if self.view.collection.is_some() && !self.view.search && entry.kind == EntryKind::Directory {
@@ -492,35 +509,51 @@ impl Browser {
                 policy.permits(&id.path, entry.kind).map_err(EngineError)?;
                 self.action(Action::Prepare(request_id, source, entry, policy, self.guards()))
             }
-            Command::ConfirmRecovery(id) => {
+            Command::ConfirmDelete(id) => {
                 let plan = self
-                    .recovery_preview
+                    .delete_preview
                     .take()
                     .filter(|p| p.id == id)
-                    .ok_or_else(|| EngineError("Recovery preview expired; prepare it again".into()))?;
-                self.action(Action::Recover(plan))
+                    .ok_or_else(|| EngineError("Deletion preview expired; prepare it again".into()))?;
+                self.action(Action::Delete(plan))
             }
-            Command::ListRecovery(id) => {
-                let source = self.source(id).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
-                self.action(Action::List(source))
+            Command::Copy(id) => {
+                let (source, entry) = self.physical(&id)?;
+                self.clipboard = Some((source, entry));
+                self.operation_status = Some("Copied selection; choose a physical folder and Paste".into());
+                Ok(())
             }
-            Command::Restore(id, job) => {
-                if !self
-                    .recovery_records
-                    .as_ref()
-                    .is_some_and(|(source, records)| *source == id && records.iter().any(|r| r.id == job))
-                {
-                    return Err(EngineError("Inspect Recovery and select a current record first".into()));
-                }
-                let source = self.source(id).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
-                let policy = self.policy(id)?.clone();
-                self.action(Action::Restore(source, policy, job, self.guards()))
+            Command::CopyPath(id) => {
+                let (source, entry) = self.physical(&id)?;
+                self.clipboard_text =
+                    Some(source.root.join(entry.id.path.as_path()).into_os_string().into_string().map_err(|_| {
+                        EngineError("This path is not UTF-8; its display label was not copied as an exact path".into())
+                    })?);
+                Ok(())
+            }
+            Command::Paste(location) => {
+                self.paste_availability(&location).map_err(EngineError)?;
+                let (source, entry) =
+                    self.clipboard.clone().ok_or_else(|| EngineError("Copy a physical item first".into()))?;
+                let destination = self
+                    .source(location.source)
+                    .cloned()
+                    .ok_or_else(|| EngineError("Unknown destination source".into()))?;
+                let policy = self.policy(location.source)?.clone();
+                self.action(Action::Copy(source, entry, destination, location.path, policy, self.guards()))
+            }
+            Command::Rename(id, name) => {
+                self.write_availability(&id).map_err(EngineError)?;
+                operations::filename(&name).map_err(EngineError)?;
+                let (source, entry) = self.physical(&id)?;
+                let policy = self.policy(id.source)?.clone();
+                self.action(Action::Rename(source, entry, name, policy, self.guards()))
             }
             Command::SaveLibrary(settings) => {
                 if self.operation_pending {
                     return Err(EngineError("Wait for the current operation before changing settings".into()));
                 }
-                self.recovery_preview = None;
+                self.delete_preview = None;
                 settings.validate().map_err(EngineError)?;
                 if self.settings_pending {
                     return Err(EngineError("A settings save is already pending".into()));
@@ -626,6 +659,9 @@ impl Browser {
                 self.start(self.locations.clone(), self.view.collection)
             }
             Command::Cancel => {
+                if let Some(cancel) = &self.action_cancel {
+                    cancel.store(true, Ordering::Release);
+                }
                 if let Some(cancel) = &self.cancel {
                     cancel.store(true, Ordering::Release);
                 }
@@ -644,7 +680,7 @@ impl Browser {
     }
 
     fn add_source(&mut self, root: PathBuf) -> Result<(), EngineError> {
-        if !root.is_absolute() || root.components().any(|c| c.as_os_str() == archiv_core::actions::RECOVERY_DIR) {
+        if !root.is_absolute() {
             return Err(EngineError("Choose an absolute folder path".into()));
         }
         let existing = self.sources.iter().find(|source| source.root == root).map(|source| source.id);
@@ -713,7 +749,7 @@ impl Browser {
         self.view.search = search.is_some();
         self.view.pending = if search.is_some() { 1 } else { locations.len() };
         self.branches.clear();
-        self.recovery_preview = None;
+        self.delete_preview = None;
         self.locations = locations;
         self.view.collection = collection;
         self.view.contributors.clear();
@@ -738,7 +774,7 @@ impl Browser {
                 self.operation_pending = false;
                 match result {
                     Ok(ActionResult::Preview(plan)) if event.generation == self.generation => {
-                        self.recovery_preview = Some(*plan);
+                        self.delete_preview = Some(*plan);
                         self.operation_status = None;
                     }
                     Ok(ActionResult::Preview(_)) => {
@@ -746,7 +782,6 @@ impl Browser {
                     }
                     Ok(ActionResult::Changed(message)) => {
                         self.operation_status = Some(message);
-                        self.recovery_records = None;
                         if !self.locations.is_empty()
                             && let Err(error) = self.start(self.locations.clone(), self.view.collection)
                         {
@@ -755,13 +790,18 @@ impl Browser {
                     }
                     Ok(ActionResult::Done(message)) => {
                         self.operation_status = Some(message);
-                        self.recovery_records = None;
                     }
-                    Ok(ActionResult::Records(source, records)) => {
-                        self.recovery_records = Some((source, records));
-                        self.operation_status = None;
+                    Err(error) => {
+                        let refresh = if !self.locations.is_empty() {
+                            self.start(self.locations.clone(), self.view.collection).err()
+                        } else {
+                            None
+                        };
+                        self.operation_status = Some(refresh.map_or_else(
+                            || error.clone(),
+                            |refresh| format!("{error}; refresh also failed: {refresh}"),
+                        ));
                     }
-                    Err(error) => self.operation_status = Some(error),
                 }
                 self.bump_revision();
                 continue;
@@ -775,8 +815,7 @@ impl Browser {
                             cancel.store(true, Ordering::Release);
                         }
                         self.branches.clear();
-                        self.recovery_preview = None;
-                        self.recovery_records = None;
+                        self.delete_preview = None;
                         self.view.phase = Phase::Idle;
                         self.view.location = None;
                         self.view.collection = None;
@@ -786,6 +825,7 @@ impl Browser {
                         self.view.summary = None;
                         self.locations.clear();
                         self.history.clear();
+                        self.clipboard = None;
                         self.sources = settings.sources.clone();
                         self.next_source = self.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
                         self.library = settings;
@@ -886,19 +926,40 @@ impl Browser {
     pub fn operation_pending(&self) -> bool {
         self.operation_pending
     }
-    /// Single-use recovery preview.
-    pub fn recovery_preview(&self) -> Option<&RecoveryPlan> {
-        self.recovery_preview.as_ref()
+    /// Single-use deletion preview.
+    pub fn delete_preview(&self) -> Option<&DeletePlan> {
+        self.delete_preview.as_ref()
     }
-    /// Explicitly inspected recovery records.
-    pub fn recovery_records(&self) -> Option<&(SourceId, Vec<RecoveryRecord>)> {
-        self.recovery_records.as_ref()
+    /// Consume pending clipboard text once; no lossy path can become an operation target.
+    pub fn take_clipboard_text(&mut self) -> Option<String> {
+        self.clipboard_text.take()
+    }
+    /// Shared destination availability; execution revalidates paths and policy in the worker.
+    pub fn paste_availability(&self, location: &Location) -> Result<(), String> {
+        if self.operation_pending || self.settings_pending {
+            return Err("Wait for the current operation/settings save".into());
+        }
+        let (_, entry) = self.clipboard.as_ref().ok_or("Copy a physical item first")?;
+        let path = location.path.child(&entry.name).map_err(|e| e.to_string())?;
+        self.policy(location.source).map_err(|e| e.to_string())?.permits(&path, entry.kind)
+    }
+    /// Physical identity check shared by menu actions and engine admission.
+    pub fn physical(&self, id: &EntryId) -> Result<(Source, Entry), EngineError> {
+        let entry = self.entry(id).cloned().ok_or_else(|| EngineError("Item is no longer visible".into()))?;
+        if self.contributors(id).is_some() || !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
+            return Err(EngineError("Choose an explicit physical file or folder; merged folders, links and special files have no single action target".into()));
+        }
+        let source = self.source(id.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
+        Ok((source, entry))
     }
     /// Shared availability explanation used by menus, shortcuts and direct engine calls.
-    pub fn recovery_availability(&self, id: &EntryId) -> Result<(), String> {
-        let entry = self.entry(id).ok_or("Item is no longer in this view")?;
+    pub fn write_availability(&self, id: &EntryId) -> Result<(), String> {
+        let (_, entry) = self.physical(id).map_err(|e| e.to_string())?;
         if self.view.collection.is_some() && !self.view.search && entry.kind == EntryKind::Directory {
             return Err("Virtual folders have no delete target. Open an explicit physical source first.".into());
+        }
+        if self.operation_pending || self.settings_pending {
+            return Err("Wait for the current operation/settings save".into());
         }
         self.policy(id.source).map_err(|e| e.to_string())?.permits(&id.path, entry.kind)
     }
@@ -906,7 +967,7 @@ impl Browser {
         let mut guards = Vec::new();
         for source in &self.library.sources {
             guards.push((source.clone(), ProtectedPath { path: RelativePath::default(), subtree: false }));
-            if let Some(policy) = self.library.recovery.iter().find(|p| p.source == source.id) {
+            if let Some(policy) = self.library.writes.iter().find(|p| p.source == source.id) {
                 for protected in &policy.protected {
                     guards.push((source.clone(), protected.clone()));
                 }
@@ -919,17 +980,18 @@ impl Browser {
         }
         guards
     }
-    fn policy(&self, source: SourceId) -> Result<&RecoveryPolicy, EngineError> {
+    fn policy(&self, source: SourceId) -> Result<&WritePolicy, EngineError> {
         self.library
-            .recovery
+            .writes
             .iter()
             .find(|p| p.source == source)
-            .ok_or_else(|| EngineError("Configure recovery permissions in Preferences → Safeguards first".into()))
+            .ok_or_else(|| EngineError("Configure file-change permissions in Preferences → Safeguards first".into()))
     }
     fn action(&mut self, action: Action) -> Result<(), EngineError> {
         if self.operation_pending || self.settings_pending {
             return Err(EngineError("Wait for the current operation/settings save".into()));
         }
+        let cancel = Arc::new(AtomicBool::new(false));
         let job = Job {
             generation: self.generation,
             node: None,
@@ -937,13 +999,14 @@ impl Browser {
             search: None,
             requests: Vec::new(),
             save: None,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::clone(&cancel),
         };
         self.jobs
             .as_ref()
             .ok_or_else(|| EngineError("Workers stopped".into()))?
             .try_send(job)
             .map_err(|_| EngineError("Workers busy; try again shortly".into()))?;
+        self.action_cancel = Some(cancel);
         self.operation_pending = true;
         self.operation_status = Some("Working…".into());
         Ok(())
@@ -1120,7 +1183,7 @@ mod tests {
         LibrarySettings {
             version: 1,
             openers: Default::default(),
-            recovery: Vec::new(),
+            writes: Vec::new(),
             sources: (1..=4)
                 .map(|id| Source {
                     id: SourceId(id),
@@ -1185,7 +1248,7 @@ mod tests {
         settle_all(&mut browser);
         assert_eq!(browser.rows("", false).len(), 6);
         assert_eq!(browser.rows("file", false).len(), 5); // parent plus four physical files
-        assert!(browser.execute(3, Command::PreviewRecovery(title.clone())).is_err());
+        assert!(browser.execute(3, Command::PreviewDelete(title.clone())).is_err());
         browser.execute(4, Command::Expand(title.clone())).unwrap();
         assert_eq!(browser.rows("", false).len(), 1);
         browser.execute(5, Command::Expand(title)).unwrap();
@@ -1213,56 +1276,6 @@ mod tests {
         browser.execute(3, Command::Refresh).unwrap();
         settle_all(&mut browser);
         assert!(!browser.view.search);
-    }
-    #[test]
-    fn recovery_requires_policy_preview_and_single_use_confirmation_and_restores() {
-        let fixture = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(fixture.path().join("media/Title")).unwrap();
-        std::fs::write(fixture.path().join("media/Title/file.txt"), b"safe").unwrap();
-        let source =
-            Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
-        let mut config = LibrarySettings { sources: vec![source], ..Default::default() };
-        let mut browser = browser();
-        browser.configure(config.clone(), fixture.path().join("config/library.json")).unwrap();
-        browser.execute(1, Command::AddSource(fixture.path().to_owned())).unwrap();
-        settle_all(&mut browser);
-        let media = browser.view.entries[0].id.clone();
-        assert!(browser.execute(2, Command::PreviewRecovery(media.clone())).is_err());
-        config.recovery.push(RecoveryPolicy {
-            source: SourceId(1),
-            enabled: true,
-            allowed: vec![RelativePath::default()],
-            protected: vec![ProtectedPath { path: RelativePath::new("media").unwrap(), subtree: false }],
-        });
-        browser.execute(3, Command::SaveLibrary(config.clone())).unwrap();
-        settle_all(&mut browser);
-        browser
-            .execute(4, Command::Navigate(Location { source: SourceId(1), path: RelativePath::new("media").unwrap() }))
-            .unwrap();
-        settle_all(&mut browser);
-        let title = browser.view.entries[0].id.clone();
-        browser.execute(5, Command::PreviewRecovery(title.clone())).unwrap();
-        settle_all(&mut browser);
-        assert!(fixture.path().join("media/Title").exists());
-        let id = browser.recovery_preview().unwrap().id;
-        browser.execute(6, Command::ConfirmRecovery(id)).unwrap();
-        assert!(browser.execute(7, Command::ConfirmRecovery(id)).is_err());
-        settle_all(&mut browser);
-        assert!(!fixture.path().join("media/Title").exists());
-        browser.execute(8, Command::ListRecovery(SourceId(1))).unwrap();
-        settle_all(&mut browser);
-        let job = browser.recovery_records().unwrap().1[0].id.clone();
-        browser.execute(9, Command::Restore(SourceId(1), job)).unwrap();
-        settle_all(&mut browser);
-        assert_eq!(std::fs::read(fixture.path().join("media/Title/file.txt")).unwrap(), b"safe");
-        let title = browser.view.entries[0].id.clone();
-        browser.execute(10, Command::PreviewRecovery(title)).unwrap();
-        settle_all(&mut browser);
-        let id = browser.recovery_preview().unwrap().id;
-        browser.execute(11, Command::SaveLibrary(config)).unwrap();
-        assert!(browser.execute(12, Command::ConfirmRecovery(id)).is_err());
-        settle_all(&mut browser);
-        assert!(fixture.path().join("media/Title").exists());
     }
 
     #[test]
@@ -1433,5 +1446,49 @@ mod tests {
         sender.send(Event { generation: 9, node: None, result: Update::Finished(Ok(ReadSummary::default())) }).unwrap();
         browser.poll();
         assert_eq!(browser.view.phase, Phase::Cancelled);
+    }
+    #[test]
+    fn file_actions_share_policy_copy_identity_and_single_use_delete() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir(fixture.path().join("out")).unwrap();
+        std::fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
+        let source =
+            Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+        let mut config = LibrarySettings { sources: vec![source], ..Default::default() };
+        let mut browser = browser();
+        browser.configure(config.clone(), fixture.path().join("config/library.json")).unwrap();
+        browser.execute(1, Command::AddSource(fixture.path().to_owned())).unwrap();
+        settle_all(&mut browser);
+        let id = browser.view.entries.iter().find(|e| e.name == "notes.txt").unwrap().id.clone();
+        assert!(browser.execute(2, Command::PreviewDelete(id.clone())).is_err());
+        assert!(browser.execute(3, Command::Rename(id.clone(), "new.txt".into())).is_err());
+        config.writes.push(WritePolicy {
+            source: SourceId(1),
+            enabled: true,
+            allowed: vec![RelativePath::default()],
+            protected: Vec::new(),
+        });
+        browser.configure(config, fixture.path().join("config/library.json")).unwrap();
+        browser.execute(4, Command::Copy(id.clone())).unwrap();
+        browser
+            .execute(5, Command::Paste(Location { source: SourceId(1), path: RelativePath::new("out").unwrap() }))
+            .unwrap();
+        settle_all(&mut browser);
+        assert_eq!(std::fs::read(fixture.path().join("out/notes.txt")).unwrap(), b"safe");
+        assert!(fixture.path().join("notes.txt").exists());
+        browser.execute(6, Command::Rename(id, "renamed.txt".into())).unwrap();
+        settle_all(&mut browser);
+        assert!(fixture.path().join("renamed.txt").exists());
+        let renamed = browser.view.entries.iter().find(|e| e.name == "renamed.txt").unwrap().id.clone();
+        browser.execute(7, Command::PreviewDelete(renamed.clone())).unwrap();
+        settle_all(&mut browser);
+        let plan = browser.delete_preview().unwrap().id;
+        assert!(fixture.path().join("renamed.txt").exists());
+        browser.execute(8, Command::ConfirmDelete(plan)).unwrap();
+        browser.execute(8, Command::ConfirmDelete(plan)).unwrap();
+        assert!(browser.execute(9, Command::ConfirmDelete(plan)).is_err());
+        settle_all(&mut browser);
+        assert!(!fixture.path().join("renamed.txt").exists());
+        assert!(fixture.path().join("out/notes.txt").exists());
     }
 }

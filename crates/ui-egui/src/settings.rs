@@ -1,6 +1,6 @@
 //! Categorized native preferences; settings writes are admitted through the engine.
 use crate::{Preferences, ThemePreference, theme::Tokens, widgets};
-use archiv_core::actions::{ProtectedPath, RecoveryPolicy};
+use archiv_core::actions::{ProtectedPath, WritePolicy};
 use archiv_core::library::{Collection, LibrarySettings};
 use archiv_core::{Location, RelativePath, Source, SourceId};
 use archiv_engine::Command;
@@ -35,7 +35,7 @@ impl Editor {
         let mut allowed = HashMap::new();
         let mut protected = HashMap::new();
         let mut subtrees = HashMap::new();
-        for policy in &draft.recovery {
+        for policy in &draft.writes {
             allowed.insert(
                 policy.source,
                 policy
@@ -110,7 +110,7 @@ impl Editor {
                         if let Some(remote)=&mut source.nfs_remote{field(ui,"Expected NFS export",remote,1024);}
                         if ui.button("Remove source").clicked(){remove=Some(source.id);}
                     });}
-                    if let Some(id)=remove{self.allowed.remove(&id);self.protected.remove(&id);self.subtrees.remove(&id);self.draft.sources.retain(|s|s.id!=id);self.draft.recovery.retain(|p|p.source!=id);for members in self.members.values_mut(){members.retain(|(source,_)|*source!=id);}for c in &mut self.draft.collections{c.members.retain(|m|m.source!=id);}}
+                    if let Some(id)=remove{self.allowed.remove(&id);self.protected.remove(&id);self.subtrees.remove(&id);self.draft.sources.retain(|s|s.id!=id);self.draft.writes.retain(|p|p.source!=id);for members in self.members.values_mut(){members.retain(|(source,_)|*source!=id);}for c in &mut self.draft.collections{c.members.retain(|m|m.source!=id);}}
                     if self.draft.sources.len()<32&&ui.button("Add source").clicked(){let id=self.draft.sources.iter().map(|s|s.id.0).max().unwrap_or(0).saturating_add(1);self.draft.sources.push(Source{id:SourceId(id),label:format!("Source {id}"),root:PathBuf::new(),nfs_remote:None});}
                 }
                 Page::Collections=>{
@@ -144,15 +144,15 @@ impl Editor {
                     field(ui,"Image viewer",&mut self.draft.openers.images,4096);ui.small("For example: imv");field(ui,"Media player",&mut self.draft.openers.media,4096);ui.small("For example: mpv");field(ui,"Text editor",&mut self.draft.openers.text,4096);ui.small("For example: kwrite");field(ui,"Other files",&mut self.draft.openers.other,4096);ui.small("Leave empty to require an explicit application configuration.");
                 }
                 Page::Safeguards=>{
-                    ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));section(ui,"Recovery and protected folders");});ui.label("Recovery is disabled until explicitly configured for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots, collection roots and recovery storage are always protected. No permanent delete is provided.");
+                    ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));section(ui,"File changes and protected folders");});ui.label("Delete, rename and pasted copies are disabled until explicitly allowed for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots and collection roots are always protected. Delete is permanent and cannot be undone.");
                     for source in &self.draft.sources{ui.push_id(source.id,|ui|{
                         ui.separator();ui.strong(&source.label);ui.label(source.root.to_string_lossy());
-                        let mut enabled=self.draft.recovery.iter().any(|p|p.source==source.id&&p.enabled);
-                        if ui.checkbox(&mut enabled,"Allow moves to recovery").changed(){if let Some(policy)=self.draft.recovery.iter_mut().find(|p|p.source==source.id){policy.enabled=enabled;}else{self.draft.recovery.push(RecoveryPolicy{source:source.id,enabled,allowed:Vec::new(),protected:Vec::new()});}}
+                        let mut enabled=self.draft.writes.iter().any(|p|p.source==source.id&&p.enabled);
+                        if ui.checkbox(&mut enabled,"Allow permanent delete, rename and pasted copies").changed(){if let Some(policy)=self.draft.writes.iter_mut().find(|p|p.source==source.id){policy.enabled=enabled;}else{self.draft.writes.push(WritePolicy{source:source.id,enabled,allowed:Vec::new(),protected:Vec::new()});}}
                         ui.label("Allowed relative folders (one per line)");multiline(ui,"Allowed folders",self.allowed.entry(source.id).or_default());ui.small("Use . to allow the source subtree; the source root itself stays protected.");
                         ui.label("Protect folder itself (children may be changed)");multiline(ui,"Protected folders",self.protected.entry(source.id).or_default());
                         ui.label("Protect entire subtrees");multiline(ui,"Protected subtrees",self.subtrees.entry(source.id).or_default());
-                        ui.small("Protecting a folder also prevents removing any ancestor that contains it. Recovery is on this source filesystem, inside .archiv-recovery; retained items still use disk space.");
+                        ui.small("Protecting a folder also prevents removing any ancestor that contains it. Renames and pasted copies also obey the destination protections.");
                     });}
                 }
                 Page::Appearance=>{}
@@ -185,7 +185,7 @@ impl Editor {
                     })
                     .collect::<Result<Vec<_>, String>>()?;
             }
-            for policy in &mut draft.recovery {
+            for policy in &mut draft.writes {
                 policy.allowed = parse_lines(self.allowed.get(&policy.source).map_or("", String::as_str), true)?;
                 policy.protected = parse_lines(self.protected.get(&policy.source).map_or("", String::as_str), false)?
                     .into_iter()
@@ -396,7 +396,7 @@ mod tests {
                     Location { source: SourceId(1), path: RelativePath::new("two").unwrap() },
                 ],
             }],
-            recovery: vec![RecoveryPolicy {
+            writes: vec![WritePolicy {
                 source: SourceId(1),
                 enabled: true,
                 allowed: vec![RelativePath::default()],

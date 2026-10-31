@@ -1,97 +1,79 @@
-# Applications, safeguards and recovery
+# File actions and safeguards
 
-## Opening files
+Right-click a physical file or folder for Open, Copy, Copy path, Paste, Rename and Delete.
+Edit offers the same actions. Ctrl+C copies the selection into Archiv's session clipboard;
+Ctrl+V pastes into the selected physical folder or current physical directory. Right-clicking
+empty space offers Paste into the current folder and Refresh. F2 opens Rename; Enter submits
+its new name. Copy path sends an exact UTF-8 path to the desktop text clipboard. File copying
+uses Archiv's internal clipboard, not cross-application file clipboard formats.
 
-Preferences → Applications selects executable names or absolute paths for images, media, text
-and other files. Empty means no handler. Values are executable paths, not shell commands; argument
-strings such as `mpv --fullscreen` are not parsed. Double-click/Enter or Open with application
-launches the configured program with `--` and the exact absolute physical filename as separate
-arguments. Paths retain their original bytes. Links and special files are refused. Descriptor
-resolution and the listed inode/change time are revalidated before launching.
+## Permissions
 
-The external program runs as the normal user with its ordinary filesystem permissions. It receives
-a pathname, not a confinement promise: files may change after launch, editors may write them, and
-single-instance applications may delegate opening to another process. Archiv's safeguard settings
-do not constrain those applications. No selected script/executable is executed as the handler by
-inference. Launches are capped at eight tracked children per worker (sixteen total), reaped without
-blocking rendering; unsuccessful exits are reported. No application output/credentials are captured.
+File changes are disabled by default. Add a saved physical source in Preferences → Sources.
+Under Safeguards, explicitly allow permanent delete, rename and pasted copies for that source,
+then enter allowed source-relative folders, one per line. `.` permits the source subtree.
+Source roots and configured collection roots remain protected. There is one current version-1
+JSON schema with `writes` policies; no configuration migration or compatibility format.
 
-## Configuring recovery permissions
+Protected folders prevent modifying the folder itself or any ancestor containing it; permitted
+children can still be changed. Protected subtrees also block changes to descendants. Renaming
+checks both old and new names; pasting checks the destination. Protections are checked across
+all configured sources by paths and filesystem identity. An unavailable protection fails closed.
+These rules govern Archiv only. External applications, SSH and other NAS clients retain their
+ordinary permissions. No ownership changes, escalation or permission editor is provided.
 
-Recovery is disabled by default. Under Preferences → Safeguards, choose a source, explicitly
-allow recovery moves, and enter allowed source-relative folders, one per line. `.` allows the
-source subtree, while the source root itself remains protected.
+Merged folders never expand into hidden operation targets. Browse a physical source first.
+Duplicate files retain their physical identity; an action affects only the chosen location.
+Links, special files and nested mounts are refused by file actions.
 
-Two protection lists are available:
+## Delete
 
-- **Protected folders:** the folder itself and any ancestor containing it cannot be removed.
-  Descendants can be recovered if the allowlist and other protections permit them.
-- **Protected subtrees:** the folder, ancestors and every descendant are protected.
+Delete permanently removes the selected physical item and, for a directory, its listed children.
+It first builds a bounded preview naming every affected physical path. Cancel receives initial
+focus. Only the separate Delete permanently action confirms the single-use preview. Navigation
+or settings changes expire it. Nothing is moved to hidden storage; there is no undo service.
 
-For example, a structural protection on `data/media` prevents recovering `data` or `data/media`
-but can permit an intentional recovery of `data/media/Example Title`. Paths are exact and
-case-sensitive. Source roots, configured collection roots and `.archiv-recovery` are always
-protected. Protections from all configured sources are rechecked by paths and observed filesystem
-identities so overlapping source definitions cannot bypass them. An unavailable configured guard
-causes recovery to fail closed, even if the selected source is online. Depth is limited to 64.
+Immediately before the first deletion the full scope and observed identities are checked again.
+Descriptor-relative operations refuse links, source replacements and missing configured NFS
+mounts. Files are unlinked and directories removed only when empty. New/unexpected contents are
+not recursively swept up. Cancellation/errors can leave a partially deleted tree; completed
+deletions cannot be undone. Directory sync errors explicitly report uncertain crash durability.
 
-These are Archiv rules, not a filesystem permission system. Writable NFS/SSH, Dolphin and external
-applications have separate authority. Unix ownership/mode displays never grant Archiv permission.
-NFS root squashing and existing server ownership/ACLs are not changed by Archiv.
+## Rename and Copy/Paste
 
-## Move to recovery and restore
+Rename changes one filename within its existing physical parent. Slashes, . and .. are refused.
+The platform preserves raw filename bytes; a non-UTF-8 old name is never edited through a lossy
+path. Rename and copy publication use NOREPLACE: existing files are never overwritten.
 
-Select one explicit physical file/folder, then use Edit → Move to recovery, the row context menu,
-Details, or Delete. Text input consumes its editing keys. A virtual collection/folder never expands
-into hidden destructive targets: browse the physical source first. Duplicate files are distinct
-physical selections. The preview names the source, exact path and recovery destination. Cancel is
-the initial keyboard choice; Move to recovery requires its own activation. The engine consumes the
-preview once. Navigation/settings changes invalidate pending previews; settings changes cannot race
-an admitted operation.
+Copy stages one physical file/tree in a private `.archiv-copy-*` directory at the destination,
+then publishes it under the original name after verifying source snapshots and destination.
+Files use mode 0600 and folders 0700; ownership, ACLs, hard-link relationships, sparse layout,
+extended attributes and timestamps are not preserved. Sources are never removed. Failed or
+cancelled copies may retain partial staging at the reported path; there is no automatic cleanup
+of retained data. Successful publication removes only the empty staging directory.
 
-Recovery uses `.archiv-recovery` inside the physical source root, on the same filesystem. It must
-be private (0700); Archiv creates new storage privately but never chmods an existing folder to make
-an operation succeed. The source/root, parent, target identity, protections and expected NFS mount
-are checked again. Resolution is descriptor-relative, no-follow and forbids nested mounts. There
-is no cross-device copy fallback, recursive unlink, silent overwrite, permanent purge or permission
-escalation. The atomic rename uses NOREPLACE.
+Work runs on the engine's bounded workers. View → Cancel operation requests cancellation for
+scans, copy and deletion; a blocked kernel/NFS call may take time to return. No rollback is
+promised. Tree operations cap at 10,000 items, 64 source-relative path levels and 1 TiB of observed
+file sizes. Copy buffers are bounded to 1 MiB. There is no queued transfer scheduler or Cut.
 
-Each unique private recovery job first receives an atomic, file-synced manifest with the exact
-original filename bytes, source root inode, filesystem identity and target identity. Its directory
-and recovery parent are synced before rename. Source/destination directories are synced after the
-rename, followed by a durable completed-manifest replacement. File contents are not copied or
-rewritten. Active writers/hard links can still change retained content; recovery is not a backup.
-Retained items occupy space. No automatic retention deletion is implemented.
+## Concurrency and NFS limits
 
-Open Recovery, choose a physical source, and explicitly inspect its records. At most 1000 jobs and
-64 KiB per manifest are read. Prepared records with matching payloads reconcile interrupted moves;
-empty pre-manifest jobs contain no data and are ignored. Interrupted restores reconcile against the
-original inode when the payload is absent. Malformed manifests, changed filesystems, unknown payload
-identities or unsafe storage produce errors, never cleanup. Restore revalidates current policy,
-root/filesystem and payload, then renames back to the exact original path with NOREPLACE. Missing
-parents, symlinks, replaced mounts and existing destinations are refused. Successful changes refresh
-the current listing. There is no purge button or automatic removal of old journal directories.
+Linux has no inode-conditional rename/unlink-by-name API. Descriptor-relative confinement and
+snapshot checks narrow races but do not make an operation transactional against another writer
+swapping names immediately before a syscall. A concurrent final-name replacement can cause an
+unexpected object to be renamed or unlinked; post-rename checks report a detected mismatch, with
+no overwrite-prone rollback. Use filesystem/NAS permissions to exclude hostile concurrent writers.
+Permanently deleted data has no application-managed fallback.
 
-## Durability, concurrency and current acceptance
+Tests use synthetic local fixtures. Real writable NFS, server disconnects, server power loss and
+hardware durability remain deployment acceptance work. Missing configured mounts fail closed;
+Archiv never writes into the local directory underneath a missing NAS mount.
 
-Rename plus manifest update is not one filesystem transaction. A post-rename sync/manifest error
-reports that the payload was retained in a named recovery job; do not blindly retry the original
-operation. The prepared manifest allows explicit reconciliation after restart. Restore sync errors
-can mean the original path is already restored but crash durability is uncertain. Device numbers
-are snapshot checks; persisted records additionally check the filesystem ID and root inode across
-restarts/remounts. A filesystem without a nonzero exposed recovery identity is refused.
+## External applications
 
-Descriptor resolution rejects path/symlink escapes, and snapshot checks reject observed target or
-parent replacements. Linux does not provide an inode-conditional rename by filename. A hostile
-concurrent rename in the final syscall window can therefore be detected after quarantine; Archiv
-retains the moved object, reports the conflict and does not attempt an automatic rollback that
-might overwrite another file. These protections do not defend against a NAS administrator or
-another actor with equivalent access changing recovery records. Do not treat app policy as global
-confinement against arbitrary concurrent clients.
-
-Synthetic tests cover denied structure/ancestors, subtree protections, virtual targets, replayed
-confirmation, stale targets, parent symlink swaps, missing NFS mounts, private-store validation,
-permission failure, colliding restores, injected persistence failures before/after rename, prepared
-record reconciliation, non-UTF-8 paths and literal process arguments. No real NAS mutation, live
-NFS unmount/disconnect, server crash or power-loss experiment has been performed. Server/filesystem
-fsync and NFS rename support remain deployment-specific acceptance work.
+Preferences → Applications configures image/media/text/other executable names or absolute paths,
+for example imv, mpv or kwrite. Launches pass `--` and the exact filename as separate arguments;
+no shell is used. Executable argument strings are not parsed. Programs run with normal user
+permissions; Archiv rules do not sandbox them. Files are revalidated before launch. Child tracking
+is bounded to eight applications per worker and reaped without blocking rendering.

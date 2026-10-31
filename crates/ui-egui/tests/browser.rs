@@ -223,8 +223,8 @@ fn preferences_ok_saves_application_configuration_before_closing() {
 }
 
 #[test]
-fn recovery_confirmation_cancels_safely_then_moves_only_the_selected_item() {
-    use archiv_core::actions::{ProtectedPath, RecoveryPolicy};
+fn delete_confirmation_cancels_safely_then_permanently_deletes_only_the_selected_item() {
+    use archiv_core::actions::{ProtectedPath, WritePolicy};
     use archiv_core::library::LibrarySettings;
     use archiv_core::{RelativePath, Source, SourceId};
     let fixture = tempfile::tempdir().unwrap();
@@ -234,7 +234,7 @@ fn recovery_confirmation_cancels_safely_then_moves_only_the_selected_item() {
     let source = Source { id: SourceId(1), root: root.clone(), label: "Fixture".into(), nfs_remote: None };
     let config = LibrarySettings {
         sources: vec![source],
-        recovery: vec![RecoveryPolicy {
+        writes: vec![WritePolicy {
             source: SourceId(1),
             enabled: true,
             allowed: vec![RelativePath::default()],
@@ -262,7 +262,7 @@ fn recovery_confirmation_cancels_safely_then_moves_only_the_selected_item() {
         if attempt == 0 {
             h.key_press(egui::Key::Delete);
         } else {
-            h.get_by_label("Move to recovery…").click();
+            h.get_by_label("Delete…").click();
         }
         h.run_steps(3);
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -277,7 +277,7 @@ fn recovery_confirmation_cancels_safely_then_moves_only_the_selected_item() {
             h.run_steps(5);
             assert!(root.join("media/Title").exists());
         } else {
-            h.get_by_label("Move to recovery").click_accesskit();
+            h.get_by_label("Delete permanently").click_accesskit();
             h.run_steps(3);
             let deadline = Instant::now() + Duration::from_secs(3);
             while h.state().browser().operation_pending() && Instant::now() < deadline {
@@ -288,8 +288,8 @@ fn recovery_confirmation_cancels_safely_then_moves_only_the_selected_item() {
             assert!(!root.join("media/Title").exists());
         }
     }
-    let job = std::fs::read_dir(root.join(".archiv-recovery")).unwrap().next().unwrap().unwrap();
-    assert_eq!(std::fs::read(job.path().join("payload/notes.txt")).unwrap(), b"safe");
+    assert!(!root.join("media/Title").exists());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     assert!(root.join("media").is_dir());
 }
 
@@ -471,4 +471,68 @@ fn details_splitter_tracks_the_pointer_with_empty_and_selected_content() {
         h.run_steps(3);
         assert!((h.get_by_label("DETAILS").rect().left() - initial).abs() < 3.0);
     }
+}
+
+#[test]
+fn context_menus_copy_paste_and_rename_the_clicked_physical_item() {
+    use archiv_core::{RelativePath, Source, SourceId, actions::WritePolicy, library::LibrarySettings};
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
+    std::fs::create_dir(fixture.path().join("out")).unwrap();
+    let source = Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+    let config = LibrarySettings {
+        sources: vec![source],
+        writes: vec![WritePolicy {
+            source: SourceId(1),
+            enabled: true,
+            allowed: vec![RelativePath::default()],
+            protected: Vec::new(),
+        }],
+        ..Default::default()
+    };
+    let mut browser = Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap();
+    browser.configure(config, fixture.path().join("config/library.json")).unwrap();
+    let root = fixture.path().to_owned();
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 760.0)).build_eframe(move |_cc| {
+        let mut app = ArchivApp::new(browser, Preferences::default());
+        app.open_source(0, root);
+        app
+    });
+    settle(&mut h);
+    h.get_by_label("notes.txt").click_secondary();
+    h.run_steps(4);
+    h.get_by_label("Copy").click();
+    h.run_steps(3);
+    h.get_by_label("out").click_secondary();
+    h.run_steps(4);
+    h.get_by_label("Paste Ctrl+V").click();
+    h.run_steps(3);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.state().browser().operation_pending() && Instant::now() < deadline {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    settle(&mut h);
+    assert_eq!(std::fs::read(fixture.path().join("out/notes.txt")).unwrap(), b"safe");
+    h.get_by_label("notes.txt").click_secondary();
+    h.run_steps(4);
+    h.get_by_label("Rename… F2").click();
+    h.run_steps(4);
+    h.get_by_label("New name").click();
+    h.run_steps(2);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    h.get_by_label("New name").type_text("renamed.txt");
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.state().browser().operation_pending() && Instant::now() < deadline {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    settle(&mut h);
+    assert!(fixture.path().join("renamed.txt").exists());
+    assert!(!fixture.path().join("notes.txt").exists());
+    assert_eq!(std::fs::read(fixture.path().join("out/notes.txt")).unwrap(), b"safe");
 }

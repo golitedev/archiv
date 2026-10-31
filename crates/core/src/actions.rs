@@ -1,10 +1,8 @@
-//! Deterministic application selection and deny-by-default recovery policy.
+//! Deterministic application selection and deny-by-default file-change policy.
 use crate::{EntryKind, RelativePath, SourceId};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Reserved same-filesystem recovery directory; never part of browsing or selection.
-pub const RECOVERY_DIR: &str = ".archiv-recovery";
 /// User-chosen programs, each an executable name/path without shell arguments.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -42,7 +40,7 @@ impl Openers {
         Ok(())
     }
 }
-/// A folder protected against recovery/removal; optionally protects its entire subtree.
+/// A folder protected against file changes/removal; optionally protects its entire subtree.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProtectedPath {
@@ -54,28 +52,28 @@ pub struct ProtectedPath {
 /// Explicit opt-in per source. This policy controls Archiv only, not other programs or NAS users.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RecoveryPolicy {
+pub struct WritePolicy {
     /// Configured physical source.
     pub source: SourceId,
-    /// Explicitly allow recovery moves for this source.
+    /// Explicitly allow file changes for this source.
     pub enabled: bool,
     /// Allowed subtrees, still intersected with protections.
     pub allowed: Vec<RelativePath>,
     /// Structural or subtree protections.
     pub protected: Vec<ProtectedPath>,
 }
-impl RecoveryPolicy {
-    /// Deny source roots, recovery storage, non-files/directories, and ambiguous/protected targets.
+impl WritePolicy {
+    /// Deny source roots, non-files/directories, and ambiguous/protected targets.
     pub fn permits(&self, path: &RelativePath, kind: EntryKind) -> Result<(), String> {
         let path = path.as_path();
         if !self.enabled {
-            return Err("Recovery is disabled for this source in Safeguards".into());
+            return Err("File changes are disabled for this source in Safeguards".into());
         }
-        if path.as_os_str().is_empty() || path.components().any(|c| c.as_os_str() == RECOVERY_DIR) {
-            return Err("Source roots and recovery storage are protected".into());
+        if path.as_os_str().is_empty() {
+            return Err("Source roots are protected".into());
         }
         if !matches!(kind, EntryKind::File | EntryKind::Directory) {
-            return Err("Links and special files cannot be moved to recovery".into());
+            return Err("Links and special files are not supported by file actions".into());
         }
         if !self.allowed.iter().any(|root| path.starts_with(root.as_path())) {
             return Err("This path is outside the configured allowed folders".into());
@@ -111,13 +109,13 @@ mod tests {
     }
     #[test]
     fn protected_structure_denies_ancestors_but_can_allow_children() {
-        let mut policy = RecoveryPolicy {
+        let mut policy = WritePolicy {
             source: SourceId(1),
             enabled: true,
             allowed: vec![path("")],
             protected: vec![ProtectedPath { path: path("data/media"), subtree: false }],
         };
-        for target in ["", "data", "data/media", ".archiv-recovery/item/payload"] {
+        for target in ["", "data", "data/media"] {
             assert!(policy.permits(&path(target), EntryKind::Directory).is_err(), "{target}");
         }
         assert!(policy.permits(&path("data/media/Title"), EntryKind::Directory).is_ok());

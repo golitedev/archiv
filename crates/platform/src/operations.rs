@@ -1,18 +1,14 @@
-//! Descriptor-relative recovery, durable manifests and explicit external application launches.
-use archiv_core::actions::{FileIdentity, ProtectedPath, RECOVERY_DIR, RecoveryPolicy};
-use archiv_core::{Entry, EntryKind, RelativePath, Source};
+//! Anchored file actions and explicit application launches.
+use archiv_core::actions::{FileIdentity, ProtectedPath, WritePolicy};
+use archiv_core::{Entry, EntryId, EntryKind, RelativePath, Source};
 use rustix::fs::{self as unix, AtFlags, Mode, OFlags, RenameFlags, ResolveFlags};
-use serde::{Deserialize, Serialize};
 use std::fs::{self, File, Metadata};
 use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::{
-    ffi::{OsStrExt, OsStringExt},
-    fs::MetadataExt,
-};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-
+use std::sync::atomic::{AtomicBool, Ordering};
 /// Identity of a no-follow metadata snapshot.
 pub fn identity(metadata: &Metadata) -> FileIdentity {
     FileIdentity {
@@ -24,13 +20,6 @@ pub fn identity(metadata: &Metadata) -> FileIdentity {
 }
 fn same(a: FileIdentity, b: FileIdentity) -> bool {
     a.device == b.device && a.inode == b.inode
-}
-fn filesystem_id(root: &File) -> Result<u64, String> {
-    let id = unix::fstatvfs(root).map_err(|e| e.to_string())?.f_fsid;
-    if id == 0 {
-        return Err("Filesystem does not expose a stable recovery identity".into());
-    }
-    Ok(id)
 }
 fn descriptor_path(file: &File) -> PathBuf {
     format!("/proc/self/fd/{}", file.as_raw_fd()).into()
@@ -78,7 +67,17 @@ fn beneath(root: &File, path: &Path, open: OFlags) -> Result<File, String> {
 fn inspect(parent: &File, name: &std::ffi::OsStr) -> Result<Metadata, String> {
     fs::symlink_metadata(descriptor_path(parent).join(name)).map_err(|e| e.to_string())
 }
-fn check_policy(policy: &RecoveryPolicy, entry: &Entry) -> Result<(), String> {
+fn current_parent(root: &File, path: &RelativePath, held: &File) -> Result<(), String> {
+    let current = beneath(root, path.as_path(), flags())?;
+    if !same(
+        identity(&current.metadata().map_err(|e| e.to_string())?),
+        identity(&held.metadata().map_err(|e| e.to_string())?),
+    ) {
+        return Err("Parent changed; file action stopped".into());
+    }
+    Ok(())
+}
+fn check_policy(policy: &WritePolicy, entry: &Entry) -> Result<(), String> {
     policy.permits(&entry.id.path, entry.kind)
 }
 
@@ -125,314 +124,6 @@ fn check_guards(source: &Source, entry: &Entry, guards: &[(Source, ProtectedPath
     Ok(())
 }
 
-/// Immutable confirmation snapshot; the engine supplies a single-use request identity.
-#[derive(Clone, Debug)]
-pub struct RecoveryPlan {
-    /// Single-use preview identity.
-    pub id: u64,
-    /// Explicit physical source.
-    pub source: Source,
-    /// Exact observed item; never expanded from a virtual directory.
-    pub entry: Entry,
-    /// Policy validated again before execution.
-    pub policy: RecoveryPolicy,
-    /// Held-root identity observed while preparing.
-    pub root_identity: FileIdentity,
-    /// Cross-source structural protections, checked by filesystem identity as well as path.
-    pub guards: Vec<(Source, ProtectedPath)>,
-}
-/// Prepare without modifying the source; fail when the listing snapshot is stale.
-pub fn prepare(
-    id: u64,
-    source: Source,
-    entry: Entry,
-    policy: RecoveryPolicy,
-    guards: Vec<(Source, ProtectedPath)>,
-) -> Result<RecoveryPlan, String> {
-    if source.id != entry.id.source || policy.source != source.id {
-        return Err("Source and policy identities do not match".into());
-    }
-    check_policy(&policy, &entry)?;
-    check_guards(&source, &entry, &guards)?;
-    let root = root(&source)?;
-    let parent = entry.id.path.parent().ok_or("Source roots are protected")?;
-    let directory = beneath(&root, parent.as_path(), flags())?;
-    let name = entry.id.path.as_path().file_name().ok_or("Missing target name")?;
-    if identity(&inspect(&directory, name)?) != entry.identity {
-        return Err("Item changed since listing; refresh before trying again".into());
-    }
-    let root_identity = identity(&root.metadata().map_err(|e| e.to_string())?);
-    Ok(RecoveryPlan { id, source, entry, policy, root_identity, guards })
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Journal {
-    version: u32,
-    original: Vec<u8>,
-    root: FileIdentity,
-    filesystem: u64,
-    object: FileIdentity,
-    directory: bool,
-    state: String,
-}
-#[cfg(test)]
-std::thread_local! { static FAIL_JOURNAL_WRITE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-fn journal_write(directory: &File, journal: &Journal) -> Result<(), String> {
-    #[cfg(test)]
-    if FAIL_JOURNAL_WRITE.with(|counter| {
-        let value = counter.get();
-        counter.set(value.saturating_sub(1));
-        value == 1
-    }) {
-        return Err("Injected storage-full/persistence failure".into());
-    }
-    let bytes = serde_json::to_vec(journal).map_err(|e| e.to_string())?;
-    let path = descriptor_path(directory);
-    let mut temp = tempfile::NamedTempFile::new_in(&path).map_err(|e| e.to_string())?;
-    temp.write_all(&bytes).map_err(|e| e.to_string())?;
-    temp.as_file().sync_all().map_err(|e| e.to_string())?;
-    temp.persist(path.join("journal.json")).map_err(|e| e.to_string())?;
-    directory.sync_all().map_err(|e| e.to_string())
-}
-fn journal_read(directory: &File) -> Result<Journal, String> {
-    let file = beneath(
-        directory,
-        Path::new("journal.json"),
-        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-    )?;
-    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
-        return Err("Recovery manifest is not a regular file".into());
-    }
-    let mut data = Vec::new();
-    file.take(65537).read_to_end(&mut data).map_err(|e| e.to_string())?;
-    if data.len() > 65536 {
-        return Err("Recovery manifest exceeds limit".into());
-    }
-    let journal: Journal = serde_json::from_slice(&data).map_err(|e| e.to_string())?;
-    if journal.original.len() > 16384 || !matches!(journal.state.as_str(), "prepared" | "recovered" | "restored") {
-        return Err("Invalid recovery manifest state or path length".into());
-    }
-    if journal.version != 1 {
-        return Err("Unsupported recovery manifest version".into());
-    }
-    Ok(journal)
-}
-fn store(root: &File, create: bool) -> Result<File, String> {
-    if create {
-        match unix::mkdirat(root, RECOVERY_DIR, Mode::from_raw_mode(0o700)) {
-            Ok(()) => root.sync_all().map_err(|e| e.to_string())?,
-            Err(error) if error == rustix::io::Errno::EXIST => {}
-            Err(error) => return Err(format!("Cannot create same-filesystem recovery storage: {error}")),
-        }
-    }
-    let directory = beneath(root, Path::new(RECOVERY_DIR), flags())?;
-    let metadata = directory.metadata().map_err(|e| e.to_string())?;
-    if metadata.mode() & 0o077 != 0 {
-        return Err("Recovery storage must be private (mode 0700); no permission change was attempted".into());
-    }
-    Ok(directory)
-}
-/// Recover one explicitly confirmed item. Never purge, overwrite, copy across disks or follow links.
-/// Any post-rename failure keeps the object and its prewritten manifest in the recovery job.
-pub fn recover(plan: &RecoveryPlan) -> Result<String, String> {
-    if plan.source.id != plan.entry.id.source || plan.policy.source != plan.source.id {
-        return Err("Source and policy identities do not match".into());
-    }
-    check_policy(&plan.policy, &plan.entry)?;
-    check_guards(&plan.source, &plan.entry, &plan.guards)?;
-    let root = root(&plan.source)?;
-    if !same(identity(&root.metadata().map_err(|e| e.to_string())?), plan.root_identity) {
-        return Err("Source changed after preview".into());
-    }
-    let parent_path = plan.entry.id.path.parent().ok_or("Source roots are protected")?;
-    let parent = beneath(&root, parent_path.as_path(), flags())?;
-    let name = plan.entry.id.path.as_path().file_name().ok_or("Missing filename")?;
-    if identity(&inspect(&parent, name)?) != plan.entry.identity {
-        return Err("Item changed after preview; nothing was moved".into());
-    }
-    let recovery = store(&root, true)?;
-    let job =
-        tempfile::Builder::new().prefix("item-").tempdir_in(descriptor_path(&recovery)).map_err(|e| e.to_string())?;
-    let job_path = job.keep();
-    let job_name = job_path.file_name().ok_or("Missing recovery identity")?.to_string_lossy().into_owned();
-    let directory = beneath(&recovery, Path::new(&job_name), flags())?;
-    let mut journal = Journal {
-        version: 1,
-        original: plan.entry.id.path.as_path().as_os_str().as_bytes().to_vec(),
-        root: plan.root_identity,
-        filesystem: filesystem_id(&root)?,
-        object: plan.entry.identity,
-        directory: plan.entry.kind == EntryKind::Directory,
-        state: "prepared".into(),
-    };
-    journal_write(&directory, &journal)?;
-    recovery.sync_all().map_err(|e| e.to_string())?;
-    // Re-resolve the parent and revalidate immediately before the atomic rename.
-    let current_parent = beneath(&root, parent_path.as_path(), flags())?;
-    if !same(
-        identity(&parent.metadata().map_err(|e| e.to_string())?),
-        identity(&current_parent.metadata().map_err(|e| e.to_string())?),
-    ) || identity(&inspect(&parent, name)?) != plan.entry.identity
-    {
-        return Err("Parent or target changed; nothing was moved".into());
-    }
-    verify(&plan.source, &root)?;
-    unix::renameat_with(&parent, name, &directory, "payload", RenameFlags::NOREPLACE)
-        .map_err(|e| format!("Recovery move refused: {e}; source was not removed by Archiv"))?;
-    let complete = || -> Result<(), String> {
-        parent.sync_all().map_err(|e| e.to_string())?;
-        directory.sync_all().map_err(|e| e.to_string())?;
-        if !same(identity(&inspect(&directory, std::ffi::OsStr::new("payload"))?), plan.entry.identity) {
-            return Err("Concurrent target replacement detected; retained payload requires inspection".into());
-        }
-        verify(&plan.source, &root)?;
-        let reachable = beneath(&root, parent_path.as_path(), flags())?;
-        if !same(
-            identity(&reachable.metadata().map_err(|e| e.to_string())?),
-            identity(&parent.metadata().map_err(|e| e.to_string())?),
-        ) {
-            return Err("Parent changed during recovery; retained payload requires inspection".into());
-        }
-        Ok(())
-    };
-    if let Err(error) = complete() {
-        return Err(format!(
-            "{error}. Data retained in {RECOVERY_DIR}/{job_name}; do not retry blindly. Open Recovery to inspect it."
-        ));
-    }
-    journal.state = "recovered".into();
-    journal_write(&directory, &journal).map_err(|e| {
-        format!("{e}. Payload retained at {RECOVERY_DIR}/{job_name}; Recovery can reconcile the prepared record.")
-    })?;
-    Ok(job_name)
-}
-/// A bounded, reconciled recovery record, including interrupted prepared moves.
-#[derive(Clone, Debug)]
-pub struct RecoveryRecord {
-    /// Opaque job directory identity.
-    pub id: String,
-    /// Exact source-relative original path.
-    pub original: RelativePath,
-    /// True if durable completion was recorded; false means an interrupted move was reconciled.
-    pub completed: bool,
-}
-/// Explicitly inspect at most 1000 recovery jobs. Invalid manifests produce an error, never deletion.
-pub fn list_recovery(source: &Source) -> Result<Vec<RecoveryRecord>, String> {
-    let root = root(source)?;
-    let recovery = match beneath(&root, Path::new(RECOVERY_DIR), flags()) {
-        Ok(dir) => dir,
-        Err(_)
-            if matches!(
-                unix::statat(&root, RECOVERY_DIR, AtFlags::SYMLINK_NOFOLLOW),
-                Err(rustix::io::Errno::NOENT)
-            ) =>
-        {
-            return Ok(Vec::new());
-        }
-        Err(error) => return Err(error),
-    };
-    let mut result = Vec::new();
-    for (index, item) in fs::read_dir(descriptor_path(&recovery)).map_err(|e| e.to_string())?.enumerate() {
-        if index >= 1000 {
-            return Err("Recovery has more than 1000 records; no records were removed".into());
-        }
-        let item = item.map_err(|e| e.to_string())?;
-        let directory = beneath(&recovery, Path::new(&item.file_name()), flags())?;
-        if matches!(unix::statat(&directory, "journal.json", AtFlags::SYMLINK_NOFOLLOW), Err(rustix::io::Errno::NOENT))
-            && matches!(unix::statat(&directory, "payload", AtFlags::SYMLINK_NOFOLLOW), Err(rustix::io::Errno::NOENT))
-        {
-            continue;
-        }
-        let journal = journal_read(&directory)
-            .map_err(|e| format!("Cannot inspect recovery {}: {e}", archiv_core::display_name(&item.file_name())))?;
-        if journal.filesystem != filesystem_id(&root)?
-            || journal.root.inode != identity(&root.metadata().map_err(|e| e.to_string())?).inode
-        {
-            return Err("Recovery record belongs to a different source filesystem".into());
-        }
-        let original = RelativePath::new(PathBuf::from(std::ffi::OsString::from_vec(journal.original)))
-            .map_err(|e| e.to_string())?;
-        match inspect(&directory, std::ffi::OsStr::new("payload")) {
-            Ok(metadata) if identity(&metadata).inode == journal.object.inode => result.push(RecoveryRecord {
-                id: item.file_name().to_string_lossy().into_owned(),
-                original,
-                completed: journal.state == "recovered",
-            }),
-            Ok(_) => return Err("A recovery payload changed identity; manual inspection is needed".into()),
-            Err(_)
-                if matches!(
-                    unix::statat(&directory, "payload", AtFlags::SYMLINK_NOFOLLOW),
-                    Err(rustix::io::Errno::NOENT)
-                ) =>
-            {
-                if journal.state == "prepared" || journal.state == "restored" {
-                    continue;
-                }
-                let parent_path = original.parent().ok_or("Invalid recovery original path")?;
-                let parent = beneath(&root, parent_path.as_path(), flags())?;
-                let name = original.as_path().file_name().ok_or("Invalid original filename")?;
-                if identity(&inspect(&parent, name)?).inode != journal.object.inode {
-                    return Err("Recovery payload is absent and the original location cannot be reconciled".into());
-                }
-            }
-            Err(error) => return Err(format!("Missing recovery payload: {error}")),
-        }
-    }
-    result.sort_by(|a, b| a.id.cmp(&b.id));
-    verify(source, &root)?;
-    Ok(result)
-}
-/// Restore to the exact original location, refusing collisions, links, mount changes and stale policy.
-pub fn restore(
-    source: &Source,
-    policy: &RecoveryPolicy,
-    id: &str,
-    guards: &[(Source, ProtectedPath)],
-) -> Result<(), String> {
-    if source.id != policy.source {
-        return Err("Recovery policy belongs to another source".into());
-    }
-    if !id.starts_with("item-") || Path::new(id).components().count() != 1 {
-        return Err("Invalid recovery identity".into());
-    }
-    let root = root(source)?;
-    let recovery = store(&root, false)?;
-    let directory = beneath(&recovery, Path::new(id), flags())?;
-    let mut journal = journal_read(&directory)?;
-    let original = RelativePath::new(PathBuf::from(std::ffi::OsString::from_vec(journal.original.clone())))
-        .map_err(|e| e.to_string())?;
-    policy.permits(&original, if journal.directory { EntryKind::Directory } else { EntryKind::File })?;
-    if journal.filesystem != filesystem_id(&root)?
-        || journal.root.inode != identity(&root.metadata().map_err(|e| e.to_string())?).inode
-        || journal.object.inode != identity(&inspect(&directory, std::ffi::OsStr::new("payload"))?).inode
-    {
-        return Err("Recovery identity changed; restore refused".into());
-    }
-    let payload = inspect(&directory, std::ffi::OsStr::new("payload"))?;
-    let target = Entry {
-        id: archiv_core::EntryId { source: source.id, path: original.clone() },
-        name: original.as_path().file_name().unwrap_or_default().to_owned(),
-        kind: if journal.directory { EntryKind::Directory } else { EntryKind::File },
-        bytes: None,
-        modified: None,
-        mode: payload.mode(),
-        identity: identity(&payload),
-    };
-    check_guards(source, &target, guards)?;
-    let parent_path = original.parent().ok_or("Cannot restore a source root")?;
-    let parent = beneath(&root, parent_path.as_path(), flags())?;
-    let name = original.as_path().file_name().ok_or("Missing original name")?;
-    verify(source, &root)?;
-    unix::renameat_with(&directory, "payload", &parent, name, RenameFlags::NOREPLACE)
-        .map_err(|e| format!("Restore refused (nothing overwritten): {e}"))?;
-    parent
-        .sync_all()
-        .and_then(|()| directory.sync_all())
-        .map_err(|e| format!("Restored at original path, but durability is uncertain: {e}"))?;
-    journal.state = "restored".into();
-    journal_write(&directory, &journal).map_err(|e| format!("Restored at original path; journal update failed: {e}"))
-}
 /// Owned external application handle. Process status IO stays in the platform boundary.
 pub struct Application {
     child: Child,
@@ -474,187 +165,485 @@ pub fn launch(source: &Source, entry: &Entry, program: &str) -> Result<Applicati
         .map_err(|e| format!("Cannot start {program}: {e}"))
 }
 
+const MAX_NODES: usize = 10_000;
+const MAX_BYTES: u64 = 1 << 40;
+fn cancelled(cancel: &AtomicBool) -> Result<(), String> {
+    if cancel.load(Ordering::Acquire) { Err("Cancelled; completed changes may remain".into()) } else { Ok(()) }
+}
+fn observed(root: &File, entry: &Entry) -> Result<File, String> {
+    let held = beneath(root, entry.id.path.as_path(), OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK)?;
+    if identity(&held.metadata().map_err(|e| e.to_string())?) != entry.identity {
+        return Err("Item changed since listing; refresh before trying again".into());
+    }
+    Ok(held)
+}
+/// Validate a single filename, preserving exact bytes.
+pub fn filename(name: &std::ffi::OsStr) -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(name);
+    if name.is_empty()
+        || name.as_bytes().len() > 255
+        || name.as_bytes().contains(&0)
+        || path.components().count() != 1
+        || !matches!(path.components().next(), Some(std::path::Component::Normal(_)))
+    {
+        return Err("Use one filename without slashes, . or .. (up to 255 bytes)".into());
+    }
+    Ok(())
+}
+fn tree(source: &Source, top: &Entry, cancel: &AtomicBool) -> Result<Vec<Entry>, String> {
+    let held_root = root(source)?;
+    observed(&held_root, top)?;
+    let mut nodes = vec![top.clone()];
+    let mut index = 0usize;
+    let mut bytes = 0u64;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(node) = nodes.get(index).cloned() {
+        cancelled(cancel)?;
+        index = index.saturating_add(1);
+        if node.id.path.as_path().components().count() > 64 {
+            return Err("Folder depth exceeds 64".into());
+        }
+        let file = observed(&held_root, &node)?;
+        match node.kind {
+            EntryKind::File => {
+                bytes = bytes.checked_add(node.bytes.ok_or("Missing file size")?).ok_or("Copy size overflow")?;
+                if bytes > MAX_BYTES {
+                    return Err("Operation exceeds 1 TiB limit".into());
+                }
+            }
+            EntryKind::Directory => {
+                if !seen.insert((node.identity.device, node.identity.inode)) {
+                    return Err("Directory cycle refused".into());
+                }
+                for child in fs::read_dir(descriptor_path(&file)).map_err(|e| e.to_string())? {
+                    cancelled(cancel)?;
+                    if nodes.len() >= MAX_NODES {
+                        return Err("Operation exceeds 10,000 items".into());
+                    }
+                    let child = child.map_err(|e| e.to_string())?;
+                    let name = child.file_name();
+                    let path = node.id.path.child(&name).map_err(|e| e.to_string())?;
+                    let child =
+                        beneath(&held_root, path.as_path(), OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NONBLOCK)?;
+                    let metadata = child.metadata().map_err(|e| e.to_string())?;
+                    let kind = if metadata.is_file() {
+                        EntryKind::File
+                    } else if metadata.is_dir() {
+                        EntryKind::Directory
+                    } else {
+                        return Err("Links and special files are not supported by file actions".into());
+                    };
+                    nodes.push(Entry {
+                        id: EntryId { source: source.id, path },
+                        name,
+                        kind,
+                        bytes: metadata.is_file().then_some(metadata.len()),
+                        modified: None,
+                        mode: metadata.mode(),
+                        identity: identity(&metadata),
+                    });
+                }
+            }
+            _ => return Err("Links and special files are not supported by file actions".into()),
+        }
+    }
+    verify(source, &held_root)?;
+    Ok(nodes)
+}
+/// Single-use engine deletion preview, including every physical descendant.
+pub struct DeletePlan {
+    /// Confirmation identity.
+    pub id: u64,
+    /// Physical source.
+    pub source: Source,
+    /// Explicit selected item.
+    pub entry: Entry,
+    policy: WritePolicy,
+    guards: Vec<(Source, ProtectedPath)>,
+    nodes: Vec<Entry>,
+    root_identity: FileIdentity,
+}
+impl DeletePlan {
+    /// Full physical scope for confirmation; no virtual expansion.
+    pub fn entries(&self) -> &[Entry] {
+        &self.nodes
+    }
+}
+/// Read-only bounded preflight; rejects links, mounts, stale entries and protected descendants.
+pub fn prepare_delete(
+    id: u64,
+    source: Source,
+    entry: Entry,
+    policy: WritePolicy,
+    guards: Vec<(Source, ProtectedPath)>,
+    cancel: &AtomicBool,
+) -> Result<DeletePlan, String> {
+    if source.id != entry.id.source || source.id != policy.source {
+        return Err("Mismatched physical identities".into());
+    }
+    check_policy(&policy, &entry)?;
+    check_guards(&source, &entry, &guards)?;
+    let held = root(&source)?;
+    let root_identity = identity(&held.metadata().map_err(|e| e.to_string())?);
+    let nodes = tree(&source, &entry, cancel)?;
+    for node in &nodes {
+        check_policy(&policy, node)?;
+    }
+    Ok(DeletePlan { id, source, entry, policy, guards, nodes, root_identity })
+}
+/// Permanent bounded deletion. Errors/cancellation may leave a partially deleted tree, never rollback.
+pub fn delete(plan: &DeletePlan, cancel: &AtomicBool) -> Result<(), String> {
+    let held = root(&plan.source)?;
+    if !same(identity(&held.metadata().map_err(|e| e.to_string())?), plan.root_identity) {
+        return Err("Source root changed after preview".into());
+    }
+    check_guards(&plan.source, &plan.entry, &plan.guards)?;
+    // Re-enumerate before the first unlink: changed scope cannot silently join the confirmation.
+    let current = tree(&plan.source, &plan.entry, cancel)?;
+    let expected: std::collections::HashMap<_, _> = plan.nodes.iter().map(|e| (&e.id, e.identity)).collect();
+    if current.len() != expected.len() || current.iter().any(|e| expected.get(&e.id) != Some(&e.identity)) {
+        return Err("Folder contents changed after preview; nothing was deleted".into());
+    }
+    for node in plan.nodes.iter().rev() {
+        cancelled(cancel)?;
+        check_policy(&plan.policy, node)?;
+        verify(&plan.source, &held)?;
+        let parent_path = node.id.path.parent().ok_or("Source root is protected")?;
+        let parent = beneath(&held, parent_path.as_path(), flags())?;
+        let expected_parent = plan.nodes.iter().find(|e| e.id.path == parent_path);
+        if let Some(expected) = expected_parent
+            && !same(identity(&parent.metadata().map_err(|e| e.to_string())?), expected.identity)
+        {
+            return Err("Parent changed during deletion; stopped".into());
+        }
+        let name = node.id.path.as_path().file_name().ok_or("Missing filename")?;
+        let actual = identity(&inspect(&parent, name)?);
+        if (node.kind == EntryKind::Directory && !same(actual, node.identity))
+            || (node.kind != EntryKind::Directory && actual != node.identity)
+        {
+            return Err("Target changed; stopped deletion".into());
+        }
+        current_parent(&held, &parent_path, &parent)?;
+        unix::unlinkat(
+            &parent,
+            name,
+            if node.kind == EntryKind::Directory { AtFlags::REMOVEDIR } else { AtFlags::empty() },
+        )
+        .map_err(|e| format!("Deletion stopped: {e}; previously deleted items cannot be restored"))?;
+        parent.sync_all().map_err(|e| format!("Deletion occurred but directory sync failed: {e}"))?;
+    }
+    Ok(())
+}
+/// Rename within the same directory; destinations are never overwritten.
+pub fn rename(
+    source: &Source,
+    entry: &Entry,
+    name: &std::ffi::OsStr,
+    policy: &WritePolicy,
+    guards: &[(Source, ProtectedPath)],
+) -> Result<(), String> {
+    filename(name)?;
+    if policy.source != source.id || entry.id.source != source.id {
+        return Err("Mismatched source identities".into());
+    }
+    check_policy(policy, entry)?;
+    check_guards(source, entry, guards)?;
+    let parent_path = entry.id.path.parent().ok_or("Source roots cannot be renamed")?;
+    let path = parent_path.child(name).map_err(|e| e.to_string())?;
+    let destination = Entry { id: EntryId { source: source.id, path }, identity: Default::default(), ..entry.clone() };
+    check_policy(policy, &destination)?;
+    check_guards(source, &destination, guards)?;
+    let held = root(source)?;
+    observed(&held, entry)?;
+    let parent = beneath(&held, parent_path.as_path(), flags())?;
+    let old = entry.id.path.as_path().file_name().ok_or("Missing filename")?;
+    if identity(&inspect(&parent, old)?) != entry.identity {
+        return Err("Item changed; rename refused".into());
+    }
+    verify(source, &held)?;
+    current_parent(&held, &parent_path, &parent)?;
+    unix::renameat_with(&parent, old, &parent, name, RenameFlags::NOREPLACE)
+        .map_err(|e| format!("Rename refused: {e}"))?;
+    parent.sync_all().map_err(|e| format!("Item renamed; durability uncertain: {e}"))?;
+    if !same(identity(&inspect(&parent, name)?), entry.identity) {
+        return Err("Concurrent replacement detected after rename; inspect destination".into());
+    }
+    Ok(())
+}
+/// Copy one physical file/tree into an explicit physical folder, staged then published without overwrite.
+/// Failed/cancelled staging is retained at the reported path; source files are never removed.
+pub fn copy(
+    source: &Source,
+    entry: &Entry,
+    destination: &Source,
+    folder: &RelativePath,
+    policy: &WritePolicy,
+    guards: &[(Source, ProtectedPath)],
+    cancel: &AtomicBool,
+) -> Result<(), String> {
+    if policy.source != destination.id || entry.id.source != source.id {
+        return Err("Mismatched source identities".into());
+    }
+    filename(&entry.name)?;
+    let target = folder.child(&entry.name).map_err(|e| e.to_string())?;
+    let synthetic =
+        Entry { id: EntryId { source: destination.id, path: target }, identity: Default::default(), ..entry.clone() };
+    check_policy(policy, &synthetic)?;
+    check_guards(destination, &synthetic, guards)?;
+    let nodes = tree(source, entry, cancel)?;
+    let read_root = root(source)?;
+    let write_root = root(destination)?;
+    let parent = beneath(&write_root, folder.as_path(), flags())?;
+    // Prevent copying a directory into itself, including through overlapping source definitions.
+    let mut ancestor = Some(folder.clone());
+    while let Some(path) = ancestor {
+        let held = beneath(&write_root, path.as_path(), flags())?;
+        if same(identity(&held.metadata().map_err(|e| e.to_string())?), entry.identity) {
+            return Err("Cannot paste a folder into itself or its descendants".into());
+        }
+        ancestor = path.parent();
+    }
+    match unix::statat(&parent, &entry.name, AtFlags::SYMLINK_NOFOLLOW) {
+        Err(e) if e == rustix::io::Errno::NOENT => {}
+        Ok(_) => return Err("Destination already exists; nothing was overwritten".into()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".archiv-copy-")
+        .tempdir_in(descriptor_path(&parent))
+        .map_err(|e| e.to_string())?;
+    let staging_path = staging.keep();
+    let staging_name = staging_path.file_name().ok_or("Missing staging name")?;
+    let stage = beneath(&parent, Path::new(staging_name), flags())?;
+    let result = (|| {
+        for node in &nodes {
+            cancelled(cancel)?;
+            let suffix = node.id.path.as_path().strip_prefix(entry.id.path.as_path()).map_err(|e| e.to_string())?;
+            let relative = if suffix.as_os_str().is_empty() {
+                PathBuf::from("payload")
+            } else {
+                Path::new("payload").join(suffix)
+            };
+            let input = observed(&read_root, node)?;
+            if node.kind == EntryKind::Directory {
+                let parent = beneath(&stage, relative.parent().unwrap_or(Path::new("")), flags())?;
+                let name = relative.file_name().ok_or("Missing staged directory name")?;
+                unix::mkdirat(&parent, name, Mode::from_raw_mode(0o700)).map_err(|e| e.to_string())?;
+            } else {
+                let mut output = File::from(
+                    unix::openat2(
+                        &stage,
+                        &relative,
+                        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC,
+                        Mode::from_raw_mode(0o600),
+                        ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_XDEV,
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
+                let mut input = input;
+                let mut remaining = node.bytes.ok_or("Missing size")?;
+                let mut buffer = vec![0u8; 1_048_576];
+                while remaining > 0 {
+                    cancelled(cancel)?;
+                    let length = usize::try_from(remaining.min(buffer.len() as u64)).map_err(|e| e.to_string())?;
+                    input.read_exact(&mut buffer[..length]).map_err(|e| e.to_string())?;
+                    output.write_all(&buffer[..length]).map_err(|e| e.to_string())?;
+                    remaining = remaining.saturating_sub(length as u64);
+                }
+                if identity(&input.metadata().map_err(|e| e.to_string())?) != node.identity {
+                    return Err("Source changed during copy".into());
+                }
+                output.sync_all().map_err(|e| e.to_string())?;
+            }
+        }
+        for node in nodes.iter().rev().filter(|n| n.kind == EntryKind::Directory) {
+            let suffix = node.id.path.as_path().strip_prefix(entry.id.path.as_path()).map_err(|e| e.to_string())?;
+            beneath(&stage, &Path::new("payload").join(suffix), flags())?.sync_all().map_err(|e| e.to_string())?;
+        }
+        cancelled(cancel)?;
+        let current = tree(source, entry, cancel)?;
+        let expected: std::collections::HashMap<_, _> = nodes.iter().map(|n| (&n.id, n.identity)).collect();
+        if current.len() != expected.len() || current.iter().any(|n| expected.get(&n.id) != Some(&n.identity)) {
+            return Err("Source tree changed during copy; copy was not published".into());
+        }
+        verify(source, &read_root)?;
+        verify(destination, &write_root)?;
+        let now = beneath(&write_root, folder.as_path(), flags())?;
+        if !same(
+            identity(&now.metadata().map_err(|e| e.to_string())?),
+            identity(&parent.metadata().map_err(|e| e.to_string())?),
+        ) {
+            return Err("Destination folder changed; copy was not published".into());
+        }
+        unix::renameat_with(&stage, "payload", &parent, &entry.name, RenameFlags::NOREPLACE)
+            .map_err(|e| e.to_string())?;
+        parent.sync_all().map_err(|e| format!("Copy published but durability uncertain: {e}"))?;
+        stage.sync_all().map_err(|e| e.to_string())?;
+        unix::unlinkat(&parent, staging_name, AtFlags::REMOVEDIR).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    result.map_err(|e: String| {
+        format!(
+            "{e}. Partial copy may remain at {}; source was not removed",
+            destination.root.join(folder.as_path()).join(staging_name).display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DirectoryReader, LocalDirectoryReader, ReadRequest};
-    use archiv_core::{EntryId, SourceId};
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    use std::sync::atomic::AtomicBool;
-    fn setup() -> (tempfile::TempDir, Source, RecoveryPolicy) {
-        let fixture = tempfile::tempdir().unwrap();
-        let source =
-            Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
-        let policy = RecoveryPolicy {
+    use archiv_core::{SourceId, actions::ProtectedPath};
+    use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    fn setup() -> (tempfile::TempDir, Source, WritePolicy) {
+        let dir = tempfile::tempdir().unwrap();
+        let source = Source { id: SourceId(1), root: dir.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+        let policy = WritePolicy {
             source: source.id,
             enabled: true,
             allowed: vec![RelativePath::default()],
             protected: Vec::new(),
         };
-        (fixture, source, policy)
+        (dir, source, policy)
     }
-    fn entry(source: &Source, name: &str) -> Entry {
-        let mut entries = Vec::new();
-        let path = Path::new(name);
-        let parent = path.parent().unwrap_or(Path::new(""));
-        LocalDirectoryReader
-            .read(
-                &ReadRequest { source: source.clone(), path: RelativePath::new(parent).unwrap() },
-                &AtomicBool::new(false),
-                &mut |batch| {
-                    entries.extend(batch);
-                    true
-                },
-            )
-            .unwrap();
-        entries.into_iter().find(|e| e.id.path.as_path() == path).unwrap()
-    }
-    #[test]
-    fn persistence_failures_before_and_after_rename_never_lose_payload() {
-        for fail_at in [1, 2] {
-            let (fixture, source, policy) = setup();
-            fs::write(fixture.path().join("file"), b"safe").unwrap();
-            let plan = prepare(1, source.clone(), entry(&source, "file"), policy.clone(), Vec::new()).unwrap();
-            FAIL_JOURNAL_WRITE.with(|counter| counter.set(fail_at));
-            assert!(recover(&plan).is_err());
-            let records = list_recovery(&source).unwrap();
-            if fail_at == 1 {
-                assert_eq!(fs::read(fixture.path().join("file")).unwrap(), b"safe");
-                assert!(records.is_empty());
+    fn entry(source: &Source, name: impl AsRef<Path>) -> Entry {
+        let path = name.as_ref();
+        let metadata = fs::symlink_metadata(source.root.join(path)).unwrap();
+        Entry {
+            id: EntryId { source: source.id, path: RelativePath::new(path).unwrap() },
+            name: path.file_name().unwrap().to_owned(),
+            kind: if metadata.is_dir() {
+                EntryKind::Directory
+            } else if metadata.is_file() {
+                EntryKind::File
             } else {
-                assert!(!fixture.path().join("file").exists());
-                assert_eq!(records.len(), 1);
-                assert!(!records[0].completed);
-                restore(&source, &policy, &records[0].id, &[]).unwrap();
-                assert_eq!(fs::read(fixture.path().join("file")).unwrap(), b"safe");
-            }
-        }
-    }
-    #[test]
-    fn unavailable_write_permission_leaves_original_untouched() {
-        let (fixture, source, policy) = setup();
-        fs::write(fixture.path().join("file"), b"safe").unwrap();
-        let plan = prepare(1, source.clone(), entry(&source, "file"), policy, Vec::new()).unwrap();
-        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o500)).unwrap();
-        let result = recover(&plan);
-        fs::set_permissions(fixture.path(), fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(result.is_err());
-        assert_eq!(fs::read(fixture.path().join("file")).unwrap(), b"safe");
-    }
-    #[test]
-    fn recovery_roundtrip_preserves_directory_bytes_and_refuses_restore_collision() {
-        let (fixture, source, policy) = setup();
-        fs::create_dir_all(fixture.path().join("Title/Extras")).unwrap();
-        fs::write(fixture.path().join("Title/Extras/movie.mkv"), b"untouched").unwrap();
-        let plan = prepare(1, source.clone(), entry(&source, "Title"), policy.clone(), Vec::new()).unwrap();
-        let id = recover(&plan).unwrap();
-        assert!(!fixture.path().join("Title").exists());
-        assert_eq!(
-            fs::read(fixture.path().join(RECOVERY_DIR).join(&id).join("payload/Extras/movie.mkv")).unwrap(),
-            b"untouched"
-        );
-        let records = list_recovery(&source).unwrap();
-        assert_eq!(records.len(), 1);
-        assert!(records[0].completed);
-        fs::create_dir(fixture.path().join("Title")).unwrap();
-        assert!(restore(&source, &policy, &id, &[]).is_err());
-        assert!(fixture.path().join(RECOVERY_DIR).join(&id).join("payload").exists());
-        fs::remove_dir(fixture.path().join("Title")).unwrap();
-        restore(&source, &policy, &id, &[]).unwrap();
-        assert_eq!(fs::read(fixture.path().join("Title/Extras/movie.mkv")).unwrap(), b"untouched");
-        assert!(list_recovery(&source).unwrap().is_empty());
-        assert!(recover(&plan).is_err());
-    }
-    #[test]
-    fn stale_targets_parent_symlink_swaps_and_protected_aliases_fail() {
-        let (fixture, source, policy) = setup();
-        fs::create_dir(fixture.path().join("folder")).unwrap();
-        fs::write(fixture.path().join("folder/file"), b"original").unwrap();
-        let plan = prepare(1, source.clone(), entry(&source, "folder/file"), policy.clone(), Vec::new()).unwrap();
-        fs::rename(fixture.path().join("folder/file"), fixture.path().join("folder/old")).unwrap();
-        fs::write(fixture.path().join("folder/file"), b"replacement").unwrap();
-        assert!(recover(&plan).is_err());
-        assert_eq!(fs::read(fixture.path().join("folder/file")).unwrap(), b"replacement");
-        let plan = prepare(2, source.clone(), entry(&source, "folder/file"), policy.clone(), Vec::new()).unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("file"), b"outside").unwrap();
-        fs::rename(fixture.path().join("folder"), fixture.path().join("original-folder")).unwrap();
-        symlink(outside.path(), fixture.path().join("folder")).unwrap();
-        assert!(recover(&plan).is_err());
-        assert_eq!(fs::read(outside.path().join("file")).unwrap(), b"outside");
-        let guarded = ProtectedPath { path: RelativePath::new("original-folder").unwrap(), subtree: true };
-        assert!(
-            prepare(3, source.clone(), entry(&source, "original-folder/file"), policy, vec![(source.clone(), guarded)])
-                .is_err()
-        );
-    }
-    #[test]
-    fn missing_mount_recovery_symlink_and_read_only_failure_preserve_source() {
-        let (fixture, mut source, policy) = setup();
-        fs::write(fixture.path().join("file"), b"safe").unwrap();
-        let selected = entry(&source, "file");
-        source.nfs_remote = Some("fixture:/missing".into());
-        assert!(prepare(1, source.clone(), selected.clone(), policy.clone(), Vec::new()).is_err());
-        source.nfs_remote = None;
-        let outside = tempfile::tempdir().unwrap();
-        symlink(outside.path(), fixture.path().join(RECOVERY_DIR)).unwrap();
-        let plan = prepare(2, source.clone(), selected.clone(), policy.clone(), Vec::new()).unwrap();
-        assert!(recover(&plan).is_err());
-        assert!(fs::read_dir(outside.path()).unwrap().next().is_none());
-        fs::remove_file(fixture.path().join(RECOVERY_DIR)).unwrap();
-        fs::create_dir(fixture.path().join(RECOVERY_DIR)).unwrap();
-        fs::set_permissions(fixture.path().join(RECOVERY_DIR), fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(recover(&plan).is_err());
-        assert_eq!(fs::read(fixture.path().join("file")).unwrap(), b"safe");
-        // A non-directory store simulates creation/open failure without requiring root/mount privileges.
-        fs::remove_dir(fixture.path().join(RECOVERY_DIR)).unwrap();
-        fs::write(fixture.path().join(RECOVERY_DIR), b"occupied").unwrap();
-        assert!(recover(&plan).is_err());
-        assert_eq!(fs::read(fixture.path().join("file")).unwrap(), b"safe");
-    }
-    #[test]
-    fn interrupted_manifest_is_reconciled_and_non_utf8_original_is_preserved() {
-        let (fixture, source, policy) = setup();
-        let odd = std::ffi::OsString::from_vec(vec![b'f', 0xff]);
-        fs::write(fixture.path().join(&odd), b"bytes").unwrap();
-        let metadata = fs::symlink_metadata(fixture.path().join(&odd)).unwrap();
-        let selected = Entry {
-            id: EntryId { source: source.id, path: RelativePath::default().child(&odd).unwrap() },
-            name: odd.clone(),
-            kind: EntryKind::File,
-            bytes: Some(5),
+                EntryKind::Symlink
+            },
+            identity: identity(&metadata),
+            bytes: metadata.is_file().then_some(metadata.len()),
             modified: None,
             mode: metadata.mode(),
-            identity: identity(&metadata),
-        };
-        let plan = prepare(1, source.clone(), selected, policy.clone(), Vec::new()).unwrap();
-        let id = recover(&plan).unwrap();
-        let root = root(&source).unwrap();
-        let recovery = store(&root, false).unwrap();
-        let directory = beneath(&recovery, Path::new(&id), flags()).unwrap();
-        let mut journal = journal_read(&directory).unwrap();
-        journal.state = "prepared".into();
-        journal_write(&directory, &journal).unwrap();
-        let records = list_recovery(&source).unwrap();
-        assert!(!records[0].completed);
-        assert_eq!(records[0].original.as_path().as_os_str(), odd);
-        restore(&source, &policy, &id, &[]).unwrap();
-        assert_eq!(fs::read(fixture.path().join(&odd)).unwrap(), b"bytes");
+        }
+    }
+    fn cancel() -> AtomicBool {
+        AtomicBool::new(false)
     }
     #[test]
-    fn launch_uses_literal_arguments_and_revalidates_file_identity() {
-        let (fixture, source, _) = setup();
-        let name = "-- $(not-a-command).txt";
-        fs::write(fixture.path().join(name), b"text").unwrap();
-        let program = fixture.path().join("viewer");
-        fs::write(&program,b"#!/usr/bin/python3\nimport json,sys,pathlib\npathlib.Path(__file__).with_suffix('.json').write_text(json.dumps(sys.argv[1:]))\n").unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let selected = entry(&source, name);
-        let mut child = launch(&source, &selected, program.to_str().unwrap()).unwrap();
-        assert!(child.child.wait().unwrap().success());
-        let args: Vec<String> = serde_json::from_slice(&fs::read(program.with_extension("json")).unwrap()).unwrap();
-        assert_eq!(args, vec!["--".to_owned(), fixture.path().join(name).to_string_lossy().into_owned()]);
-        fs::write(fixture.path().join(name), b"changed").unwrap();
-        assert!(launch(&source, &selected, program.to_str().unwrap()).is_err());
+    fn permanent_delete_removes_only_confirmed_tree_and_creates_no_storage() {
+        let (dir, source, policy) = setup();
+        fs::create_dir_all(dir.path().join("folder/sub")).unwrap();
+        fs::write(dir.path().join("folder/sub/notes"), b"remove").unwrap();
+        fs::write(dir.path().join("keep"), b"safe").unwrap();
+        let plan = prepare_delete(1, source.clone(), entry(&source, "folder"), policy, Vec::new(), &cancel()).unwrap();
+        assert_eq!(plan.entries().len(), 3);
+        delete(&plan, &cancel()).unwrap();
+        assert!(!dir.path().join("folder").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(fs::read(dir.path().join("keep")).unwrap(), b"safe");
+        assert!(delete(&plan, &cancel()).is_err());
+    }
+    #[test]
+    fn delete_refuses_changed_scope_stale_target_links_mounts_and_protections() {
+        let (dir, source, mut policy) = setup();
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        fs::write(dir.path().join("folder/file"), b"safe").unwrap();
+        let plan =
+            prepare_delete(1, source.clone(), entry(&source, "folder"), policy.clone(), Vec::new(), &cancel()).unwrap();
+        fs::write(dir.path().join("folder/new"), b"new").unwrap();
+        assert!(delete(&plan, &cancel()).is_err());
+        assert!(dir.path().join("folder/file").exists());
+        policy.protected.push(ProtectedPath { path: RelativePath::new("folder/file").unwrap(), subtree: true });
+        assert!(
+            prepare_delete(
+                2,
+                source.clone(),
+                entry(&source, "folder"),
+                policy.clone(),
+                vec![(source.clone(), policy.protected[0].clone())],
+                &cancel()
+            )
+            .is_err()
+        );
+        symlink("/", dir.path().join("folder/link")).unwrap();
+        policy.protected.clear();
+        assert!(
+            prepare_delete(3, source.clone(), entry(&source, "folder"), policy.clone(), Vec::new(), &cancel()).is_err()
+        );
+        let nfs = Source { nfs_remote: Some("invalid:/missing".into()), ..source.clone() };
+        assert!(prepare_delete(4, nfs, entry(&source, "folder/file"), policy, Vec::new(), &cancel()).is_err());
+    }
+    #[test]
+    fn renamed_parent_symlink_and_cancellation_do_not_delete_outside_data() {
+        let (dir, source, policy) = setup();
+        fs::create_dir(dir.path().join("parent")).unwrap();
+        fs::write(dir.path().join("parent/file"), b"safe").unwrap();
+        let plan =
+            prepare_delete(1, source.clone(), entry(&source, "parent/file"), policy, Vec::new(), &cancel()).unwrap();
+        assert!(delete(&plan, &AtomicBool::new(true)).is_err());
+        fs::rename(dir.path().join("parent"), dir.path().join("moved")).unwrap();
+        symlink("moved", dir.path().join("parent")).unwrap();
+        assert!(delete(&plan, &cancel()).is_err());
+        assert_eq!(fs::read(dir.path().join("moved/file")).unwrap(), b"safe");
+    }
+    #[test]
+    fn rename_preserves_bytes_and_refuses_overwrites_traversal_and_changed_items() {
+        let (dir, source, policy) = setup();
+        let name = std::ffi::OsString::from_vec(vec![b'a', 0xff]);
+        fs::write(dir.path().join(&name), b"safe").unwrap();
+        let item = entry(&source, &name);
+        rename(&source, &item, std::ffi::OsStr::new("renamed"), &policy, &[]).unwrap();
+        assert_eq!(fs::read(dir.path().join("renamed")).unwrap(), b"safe");
+        fs::write(dir.path().join("existing"), b"existing").unwrap();
+        let item = entry(&source, "renamed");
+        for name in ["existing", "../escape", "a/b", "", ".", ".."] {
+            assert!(rename(&source, &item, std::ffi::OsStr::new(name), &policy, &[]).is_err());
+        }
+        fs::write(dir.path().join("renamed"), b"changed").unwrap();
+        assert!(rename(&source, &item, std::ffi::OsStr::new("new"), &policy, &[]).is_err());
+        assert_eq!(fs::read(dir.path().join("existing")).unwrap(), b"existing");
+    }
+    #[test]
+    fn copies_files_and_nested_folders_without_overwrite_or_source_removal() {
+        let (dir, source, policy) = setup();
+        fs::create_dir_all(dir.path().join("tree/sub")).unwrap();
+        fs::write(dir.path().join("tree/sub/file"), b"safe").unwrap();
+        fs::create_dir(dir.path().join("destination")).unwrap();
+        let folder = RelativePath::new("destination").unwrap();
+        copy(&source, &entry(&source, "tree"), &source, &folder, &policy, &[], &cancel()).unwrap();
+        assert_eq!(fs::read(dir.path().join("destination/tree/sub/file")).unwrap(), b"safe");
+        assert!(dir.path().join("tree/sub/file").exists());
+        assert!(copy(&source, &entry(&source, "tree"), &source, &folder, &policy, &[], &cancel()).is_err());
+        copy(&source, &entry(&source, "tree/sub/file"), &source, &folder, &policy, &[], &cancel()).unwrap();
+        assert_eq!(fs::read(dir.path().join("destination/file")).unwrap(), b"safe");
+        assert!(
+            fs::read_dir(dir.path().join("destination")).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".archiv-copy-"))
+        );
+    }
+    #[test]
+    fn copy_refuses_links_self_descendants_cancelled_stale_and_denied_destinations() {
+        let (dir, source, mut policy) = setup();
+        fs::create_dir_all(dir.path().join("tree/sub")).unwrap();
+        let top = entry(&source, "tree");
+        assert!(
+            copy(&source, &top, &source, &RelativePath::new("tree/sub").unwrap(), &policy, &[], &cancel()).is_err()
+        );
+        fs::create_dir(dir.path().join("out")).unwrap();
+        let out = RelativePath::new("out").unwrap();
+        assert!(copy(&source, &top, &source, &out, &policy, &[], &AtomicBool::new(true)).is_err());
+        symlink("/", dir.path().join("tree/link")).unwrap();
+        assert!(copy(&source, &entry(&source, "tree"), &source, &out, &policy, &[], &cancel()).is_err());
+        fs::write(dir.path().join("file"), b"safe").unwrap();
+        let file = entry(&source, "file");
+        policy.enabled = false;
+        assert!(copy(&source, &file, &source, &out, &policy, &[], &cancel()).is_err());
+        policy.enabled = true;
+        fs::write(dir.path().join("file"), b"different").unwrap();
+        assert!(copy(&source, &file, &source, &out, &policy, &[], &cancel()).is_err());
+        assert_eq!(fs::read_dir(dir.path().join("out")).unwrap().count(), 0);
     }
 }

@@ -4,7 +4,7 @@ mod fonts;
 mod settings;
 mod theme;
 mod widgets;
-use archiv_core::{EntryId, EntryKind, Location, RelativePath, SourceId, display_name};
+use archiv_core::{EntryId, EntryKind, Location, RelativePath, display_name};
 use archiv_engine::{Browser, Command, FrameCommands, Phase};
 use egui::RichText;
 use serde::{Deserialize, Serialize};
@@ -37,9 +37,8 @@ pub struct ArchivApp {
     settings: Option<settings::Editor>,
     settings_initial: Option<Preferences>,
     settings_apply: Option<Preferences>,
-    recovery: bool,
-    recovery_source: Option<SourceId>,
-    restore_choice: Option<(SourceId, String, String)>,
+    rename: Option<(EntryId, String)>,
+    focus_rename: bool,
     about: bool,
     rows: Vec<(EntryId, usize)>,
     row_key: Option<(u64, String, bool)>,
@@ -67,9 +66,8 @@ impl ArchivApp {
             settings: None,
             settings_initial: None,
             settings_apply: None,
-            recovery: false,
-            recovery_source: None,
-            restore_choice: None,
+            rename: None,
+            focus_rename: false,
             about: false,
             rows: Vec::new(),
             row_key: None,
@@ -186,16 +184,35 @@ impl ArchivApp {
             }
             self.close_after_save = false;
         }
+        if let Some(text) = self.browser.take_clipboard_text() {
+            ctx.copy_text(text);
+        }
         let t = theme::apply(&ctx, self.preferences.theme, self.preferences.reduced_motion);
         let frame = ctx.cumulative_frame_nr();
         self.refresh_rows();
         let mut command = None;
         let modal = self.add_source
             || self.settings.is_some()
-            || self.recovery
-            || self.browser.recovery_preview().is_some()
-            || self.restore_choice.is_some();
+            || self.browser.delete_preview().is_some()
+            || self.rename.is_some();
         if !modal {
+            if !ctx.text_edit_focused() {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C))
+                    && let Some(id) = &self.selected
+                {
+                    command = Some(Command::Copy(id.clone()));
+                }
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::V))
+                    && let Some(location) = self.paste_location()
+                {
+                    command = Some(Command::Paste(location));
+                }
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2))
+                    && let Some(id) = self.selected.clone()
+                {
+                    self.begin_rename(&id);
+                }
+            }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::L)) {
                 self.edit_address();
             }
@@ -213,7 +230,7 @@ impl ArchivApp {
                 && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
                 && let Some(id) = &self.selected
             {
-                command = Some(Command::PreviewRecovery(id.clone()));
+                command = Some(Command::PreviewDelete(id.clone()));
             }
         }
         egui::Panel::top("menus")
@@ -238,10 +255,6 @@ impl ArchivApp {
                                         .clicked()
                                     {
                                         command = self.open_command();
-                                        ui.close();
-                                    }
-                                    if ui.button("Recovery…").clicked() {
-                                        self.recovery = true;
                                         ui.close();
                                     }
                                     ui.menu_button("Collections", |ui| {
@@ -273,26 +286,7 @@ impl ArchivApp {
                                         self.open_preferences();
                                         ui.close();
                                     }
-                                    let reason = self
-                                        .selected
-                                        .as_ref()
-                                        .map(|id| self.browser.recovery_availability(id))
-                                        .unwrap_or_else(|| Err("Select a physical item first".into()));
-                                    if ui
-                                        .add_enabled(
-                                            reason.is_ok() && !self.browser.operation_pending(),
-                                            egui::Button::new("Move to recovery…"),
-                                        )
-                                        .on_disabled_hover_text(
-                                            reason.err().unwrap_or_else(|| "Wait for the current operation".into()),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(id) = &self.selected {
-                                            command = Some(Command::PreviewRecovery(id.clone()));
-                                        }
-                                        ui.close();
-                                    }
+                                    self.edit_actions(ui, &mut command);
                                 });
                                 ui.menu_button("View", |ui| {
                                     if ui.button("Enter a location…    Ctrl+L").clicked() {
@@ -308,8 +302,11 @@ impl ArchivApp {
                                         ui.close();
                                     }
                                     if ui
-                                        .add_enabled(self.browser.is_loading(), egui::Button::new("Cancel scan"))
-                                        .on_disabled_hover_text("No scan is running")
+                                        .add_enabled(
+                                            self.browser.is_loading() || self.browser.operation_pending(),
+                                            egui::Button::new("Cancel operation"),
+                                        )
+                                        .on_disabled_hover_text("No scan or file operation is running")
                                         .clicked()
                                     {
                                         command = Some(Command::Cancel);
@@ -488,18 +485,18 @@ impl ArchivApp {
                             {
                                 command = self.open_command();
                             }
-                            let reason = self.browser.recovery_availability(&entry.id);
+                            let reason = self.browser.write_availability(&entry.id);
                             if ui
                                 .add_enabled(
                                     reason.is_ok() && !self.browser.operation_pending(),
-                                    egui::Button::new("Move to recovery…"),
+                                    egui::Button::new("Delete…"),
                                 )
                                 .on_disabled_hover_text(
                                     reason.err().unwrap_or_else(|| "Wait for the current operation".into()),
                                 )
                                 .clicked()
                             {
-                                command = Some(Command::PreviewRecovery(entry.id.clone()));
+                                command = Some(Command::PreviewDelete(entry.id.clone()));
                             }
                             ui.small(
                                 "Safeguards apply to Archiv operations. Filesystem permissions remain authoritative.",
@@ -627,130 +624,84 @@ impl ArchivApp {
                 ctx.request_repaint();
             }
         }
-        if let Some(plan) = self.browser.recovery_preview() {
+        if let Some(plan) = self.browser.delete_preview() {
             let id = plan.id;
             let focus_cancel = self.focused_preview != Some(id);
             self.focused_preview = Some(id);
             let response =
-                egui::Modal::new(egui::Id::unique("confirm-recovery")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                egui::Modal::new(egui::Id::unique("confirm-delete")).frame(widgets::card(&t)).show(&ctx, |ui| {
                     ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 500.0));
-                    ui.heading("Move this physical item to recovery?");
+                    ui.heading("Permanently delete this item?");
                     if let Some(status) = self.browser.operation_status() {
                         ui.label(status);
                     }
                     ui.label(&plan.source.label);
                     ui.label(display_name(plan.source.root.join(plan.entry.id.path.as_path()).as_os_str()));
-                    ui.label(format!(
-                        "Recovery: {}",
-                        display_name(plan.source.root.join(archiv_core::actions::RECOVERY_DIR).as_os_str())
-                    ));
-                    ui.label("Nothing is permanently deleted. Other locations are not included.");
+                    ui.label("This permanently deletes the listed files and folders. It cannot be undone.");
+                    ui.label(format!("{} physical items, including the selected item", plan.entries().len()));
+                    egui::ScrollArea::vertical().max_height(180.0).show_rows(
+                        ui,
+                        24.0,
+                        plan.entries().len(),
+                        |ui, range| {
+                            for index in range {
+                                if let Some(entry) = plan.entries().get(index) {
+                                    let path = display_name(plan.source.root.join(entry.id.path.as_path()).as_os_str());
+                                    ui.add(egui::Label::new(&path).truncate()).on_hover_text(path);
+                                }
+                            }
+                        },
+                    );
                     ui.horizontal(|ui| {
                         let cancel = widgets::pill(ui, "Cancel", false, &t);
                         if focus_cancel {
                             cancel.request_focus();
                         }
                         if cancel.clicked() {
-                            command = Some(Command::DismissRecovery);
+                            command = Some(Command::DismissDelete);
                         }
                         if ui
                             .add_enabled_ui(!self.browser.operation_pending(), |ui| {
-                                widgets::pill(ui, "Move to recovery", true, &t)
+                                widgets::pill(ui, "Delete permanently", true, &t)
                             })
                             .inner
                             .clicked()
                         {
-                            command = Some(Command::ConfirmRecovery(id));
+                            command = Some(Command::ConfirmDelete(id));
                         }
                     });
                 });
             if response.should_close() {
-                command = Some(Command::DismissRecovery);
+                command = Some(Command::DismissDelete);
             }
         }
-        if self.recovery {
-            let response = egui::Modal::new(egui::Id::unique("recovery")).frame(widgets::card(&t)).show(&ctx, |ui| {
-                ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 620.0));
-                ui.heading("Recovery");
-                ui.label("Inspect a physical source. Restore never overwrites an existing item.");
-                egui::ComboBox::from_id_salt("recovery-source")
-                    .selected_text(
-                        self.recovery_source
-                            .and_then(|id| self.browser.source(id))
-                            .map_or("Choose source", |s| s.label.as_str()),
-                    )
-                    .show_ui(ui, |ui| {
-                        for source in self.browser.sources() {
-                            ui.selectable_value(&mut self.recovery_source, Some(source.id), &source.label);
-                        }
-                    });
-                if ui
-                    .add_enabled(
-                        self.recovery_source.is_some() && !self.browser.operation_pending(),
-                        egui::Button::new("Inspect recovery"),
-                    )
-                    .clicked()
-                    && let Some(id) = self.recovery_source
-                {
-                    command = Some(Command::ListRecovery(id));
-                }
-                egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-                    if let Some((source, records)) =
-                        self.browser.recovery_records().filter(|(id, _)| Some(*id) == self.recovery_source)
-                    {
-                        if records.is_empty() {
-                            ui.label("No recoverable items.");
-                        }
-                        for record in records {
-                            ui.push_id(&record.id, |ui| {
-                                ui.horizontal(|ui| {
-                                    let path = display_name(record.original.as_path().as_os_str());
-                                    ui.label(&path);
-                                    if !record.completed {
-                                        ui.small("Reconciled interrupted move");
-                                    }
-                                    if ui.button("Restore…").clicked() {
-                                        self.restore_choice = Some((*source, record.id.clone(), path));
-                                    }
-                                });
-                            });
-                        }
-                    }
-                });
-                if let Some(status) = self.browser.operation_status() {
-                    ui.label(status);
-                }
-                if widgets::pill(ui, "Close recovery", true, &t).clicked() {
-                    self.recovery = false;
-                }
-            });
-            if response.should_close() {
-                self.recovery = false;
-            }
-        }
-        if let Some((source, id, path)) = &self.restore_choice {
+        if let Some((id, name)) = &mut self.rename {
             let mut close = false;
-            let response =
-                egui::Modal::new(egui::Id::unique("restore-confirm")).frame(widgets::card(&t)).show(&ctx, |ui| {
-                    ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 480.0));
-                    ui.heading("Restore to the original location?");
-                    if let Some(s) = self.browser.source(*source) {
-                        ui.label(display_name(s.root.as_os_str()));
+            let response = egui::Modal::new(egui::Id::unique("rename")).frame(widgets::card(&t)).show(&ctx, |ui| {
+                ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 480.0));
+                ui.heading("Rename");
+                if let Some(source) = self.browser.source(id.source) {
+                    ui.label(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                }
+                let field = ui.add(egui::TextEdit::singleline(name).char_limit(255)).accessible_name("New name");
+                if self.focus_rename {
+                    field.request_focus();
+                    self.focus_rename = false;
+                }
+                let submit = (field.has_focus() || field.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.small("Existing files are never overwritten.");
+                ui.horizontal(|ui| {
+                    if widgets::pill(ui, "Cancel", false, &t).clicked() {
+                        close = true;
                     }
-                    ui.label(path);
-                    ui.label("Existing destinations are never overwritten.");
-                    ui.horizontal(|ui| {
-                        if widgets::pill(ui, "Cancel", false, &t).clicked() {
-                            close = true;
-                        }
-                        if widgets::pill(ui, "Restore", true, &t).clicked() {
-                            command = Some(Command::Restore(*source, id.clone()));
-                            close = true;
-                        }
-                    });
+                    if widgets::pill(ui, "Rename", true, &t).clicked() || submit {
+                        command = Some(Command::Rename(id.clone(), name.clone().into()));
+                        close = true;
+                    }
                 });
+            });
             if close || response.should_close() {
-                self.restore_choice = None;
+                self.rename = None;
             }
         }
         if self.about {
@@ -781,6 +732,99 @@ impl ArchivApp {
         if let Some(command) = command {
             self.dispatch(frame, command);
             ctx.request_repaint();
+        }
+    }
+    fn begin_rename(&mut self, id: &EntryId) {
+        if self.browser.write_availability(id).is_ok() {
+            let name = self.browser.entry(id).and_then(|e| e.name.to_str()).unwrap_or("").to_owned();
+            self.rename = Some((id.clone(), name));
+            self.focus_rename = true;
+        }
+    }
+    fn paste_location(&self) -> Option<Location> {
+        if let Some(id) = &self.selected
+            && let Ok((_, entry)) = self.browser.physical(id)
+            && entry.kind == EntryKind::Directory
+        {
+            return Some(Location { source: id.source, path: id.path.clone() });
+        }
+        if self.browser.view().collection.is_none() && !self.browser.view().search {
+            return self.browser.view().location.clone();
+        }
+        None
+    }
+    fn edit_actions(&mut self, ui: &mut egui::Ui, command: &mut Option<Command>) {
+        if let Some(id) = self.selected.clone() {
+            self.item_actions(ui, &id, command);
+        } else {
+            ui.weak("Select a file or folder for actions.");
+            self.paste_action(ui, command);
+        }
+    }
+    fn paste_action(&self, ui: &mut egui::Ui, command: &mut Option<Command>) {
+        let location = self.paste_location();
+        let permitted = location
+            .as_ref()
+            .ok_or_else(|| "Choose an explicit physical destination folder".to_owned())
+            .and_then(|location| self.browser.paste_availability(location));
+        if ui
+            .add_enabled(permitted.is_ok(), egui::Button::new("Paste").shortcut_text("Ctrl+V"))
+            .on_disabled_hover_text(permitted.err().unwrap_or_default())
+            .clicked()
+        {
+            if let Some(location) = location {
+                *command = Some(Command::Paste(location));
+            }
+            ui.close();
+        }
+    }
+    fn item_actions(&mut self, ui: &mut egui::Ui, id: &EntryId, command: &mut Option<Command>) {
+        let physical = self.browser.physical(id);
+        let kind = self.browser.entry(id).map(|e| e.kind);
+        if ui.button("Open").clicked() {
+            *command = Some(if kind == Some(EntryKind::Directory) {
+                Command::Open(id.clone())
+            } else {
+                Command::Launch(id.clone())
+            });
+            ui.close();
+        }
+        ui.separator();
+        for (label, action) in [("Copy", Command::Copy(id.clone())), ("Copy path", Command::CopyPath(id.clone()))] {
+            if ui
+                .add_enabled(physical.is_ok(), egui::Button::new(label))
+                .on_disabled_hover_text(physical.as_ref().err().map(ToString::to_string).unwrap_or_default())
+                .clicked()
+            {
+                *command = Some(action);
+                ui.close();
+            }
+        }
+        self.paste_action(ui, command);
+        ui.separator();
+        let permitted = self.browser.write_availability(id);
+        let reason = permitted.as_ref().err().cloned().unwrap_or_else(|| "Wait for the current operation".into());
+        if ui
+            .add_enabled(
+                permitted.is_ok() && !self.browser.operation_pending(),
+                egui::Button::new("Rename…").shortcut_text("F2"),
+            )
+            .on_disabled_hover_text(&reason)
+            .clicked()
+        {
+            self.begin_rename(id);
+            ui.close();
+        }
+        if ui
+            .add_enabled(
+                permitted.is_ok() && !self.browser.operation_pending(),
+                egui::Button::new("Delete…").shortcut_text("Delete"),
+            )
+            .on_disabled_hover_text(&reason)
+            .clicked()
+        {
+            *command = Some(Command::PreviewDelete(id.clone()));
+            ui.close();
         }
     }
     fn location_bar(&mut self, ui: &mut egui::Ui, command: &mut Option<Command>) {
@@ -869,6 +913,18 @@ impl ArchivApp {
         });
     }
     fn file_list(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, command: &mut Option<Command>) {
+        let background =
+            ui.interact(ui.available_rect_before_wrap(), ui.scope_id().with("file-background"), egui::Sense::click());
+        if background.secondary_clicked() {
+            self.selected = None;
+        }
+        background.context_menu(|ui| {
+            self.paste_action(ui, command);
+            if ui.button("Refresh").clicked() {
+                *command = Some(Command::Refresh);
+                ui.close();
+            }
+        });
         let width = ui.available_width();
         let [name_width, kind_width, size_width, location_width] =
             self.columns.header(ui, width, self.browser.view().search, t);
@@ -889,12 +945,12 @@ impl ArchivApp {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 26.0, self.rows.len(), |ui, range| {
             for index in range {
                 let Some((id, depth)) = self.rows.get(index).cloned() else { continue };
-                let Some(entry) = self.browser.entry(&id) else { continue };
+                let Some(entry) = self.browser.entry(&id).cloned() else { continue };
                 let selected = self.selected.as_ref() == Some(&id);
                 let branch = self.browser.branch(&id);
                 let expanded = branch.is_some_and(|b| b.expanded);
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
-                let response = ui.interact(rect, ui.scope_id().with(("row", &id)), egui::Sense::click());
+                let mut response = ui.interact(rect, ui.scope_id().with(("row", &id)), egui::Sense::click());
                 if selected || response.hovered() {
                     ui.painter().rect_filled(
                         rect.shrink2(egui::vec2(0.0, 1.0)),
@@ -902,6 +958,7 @@ impl ArchivApp {
                         if selected { t.selected } else { t.hover },
                     );
                 }
+                let row_clicked = response.clicked();
                 let name_rect = egui::Rect::from_min_size(rect.min, egui::vec2(name_width, 26.0));
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
@@ -927,10 +984,11 @@ impl ArchivApp {
                     if arrow.clicked() {
                         *command = Some(Command::Expand(id.clone()));
                     }
+                    response = response.union(arrow);
                 } else {
                     child.add_space(22.0);
                 }
-                let (icon, color) = widgets::file_icon(entry, expanded, t);
+                let (icon, color) = widgets::file_icon(&entry, expanded, t);
                 child.add(widgets::icon(icon, 17.0, color));
                 let label = display_name(&entry.name);
                 let name = child.add(egui::Button::selectable(selected, ()).left_text(label).frame(false).truncate());
@@ -945,6 +1003,7 @@ impl ArchivApp {
                         Command::Launch(id.clone())
                     });
                 }
+                response = response.union(name);
                 for (offset, cell_width, text) in [
                     (kind_offset, kind_width, entry.kind.label().to_owned()),
                     (size_offset, size_width, entry.bytes.map(format_size).unwrap_or_else(|| "—".into())),
@@ -1009,29 +1068,14 @@ impl ArchivApp {
                 } else if let Some(source) = self.browser.source(id.source) {
                     location_response.on_hover_text(display_name(source.root.join(id.path.as_path()).as_os_str()));
                 }
-                if response.clicked() {
+                if row_clicked {
                     self.selected = Some(id.clone());
                     ui.ctx().request_repaint();
                 }
-                response.context_menu(|ui| {
-                    if ui.button("Open").clicked() {
-                        *command = Some(if entry.kind == EntryKind::Directory {
-                            Command::Open(id.clone())
-                        } else {
-                            Command::Launch(id.clone())
-                        });
-                        ui.close();
-                    }
-                    let reason = self.browser.recovery_availability(&id);
-                    if ui
-                        .add_enabled(reason.is_ok(), egui::Button::new("Move to recovery…"))
-                        .on_disabled_hover_text(reason.err().unwrap_or_default())
-                        .clicked()
-                    {
-                        *command = Some(Command::PreviewRecovery(id.clone()));
-                        ui.close();
-                    }
-                });
+                if response.secondary_clicked() {
+                    self.selected = Some(id.clone());
+                }
+                response.context_menu(|ui| self.item_actions(ui, &id, command));
             }
         });
     }

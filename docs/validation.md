@@ -1,182 +1,40 @@
-# First read-only browser validation
+# Validation evidence
 
-Date: 2026-10-31. This records evidence for the first M1 slice, not completion of every UI goal.
+Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, never the real NAS.
 
-## Automated evidence
+## Automated checks
 
-`cargo test --workspace --locked -j 2`: 11 tests, using synthetic temporary directory trees.
+Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
+with warnings denied, 45 passing tests and a native debug build. The tests cover byte-preserving identities,
+merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
+policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
-- Core (2): reject absolute/traversal relative paths; keep distinct non-UTF-8 filename bytes even
-  when their lossy labels collide; escape control characters for display.
-- Platform (2): bounded batch delivery; list symlinks without traversal; refuse entering an
-  external symlink; preserve fixture bytes; cancellation before opening an unavailable source.
-- Engine (4): folder-first browsing, hidden filtering and directory-only navigation; idle startup;
-  replayed request admission; stale completion/cancel rejection; source switching and IO errors.
-- UI (3): accessible source dialog, filename filtering, physical selection/details, directory and
-  keyboard parent navigation; Ctrl+O/Escape with no implicit scan; theme controls synchronize
-  framework Light/Dark style branches. egui_kittest accessibility checks remain enabled.
+Platform file-action fixtures verify complete scoped deletion without auxiliary storage; changed
+scope/identity, protected descendants, symlink parents, missing mounts and cancellation refusal;
+non-UTF-8 rename and no-overwrite/traversal rejection; nested file/folder copies, self/descendant
+copy rejection and source retention. All destructive tests operate in temporary directories.
+Engine evidence covers denied default writes, physical Copy/Paste, Rename and single-use Delete
+confirmation, preserving the independent copy. Frontend tests drive actual right-click Copy/Paste
+and Rename via native egui events, plus Cancel/confirm deletion through the real engine.
 
-Formatting, workspace/all-target compilation and Clippy with warnings denied pass. The application
-builds with the stable 1.98.1 toolchain on the development server; 1.95 is the toolkit minimum,
-not a separate compiler version exercised in this session.
+Other egui interaction coverage includes menus, inline expansion/search, address submission,
+settings saves, theme-card/Cancel behavior, scaling, header drags and incremental Details drags.
+Verified font hashes, absent/corrupt build inputs, explicit acquisition and light/dark typography
+were checked using pinned official inputs; font binaries remain outside Git.
 
-CLI smoke checks: `--help`, successful `--list` of a synthetic directory and failure for a missing
-source. Partial results return nonzero rather than pretending a truncated listing is complete.
-No real NAS path or SSH connection was used for tests or GUI verification.
+## Native checks
 
-## Native appearance and input
+Native X11 checks use Xvfb with Mesa, XTest input, isolated XDG folders and four synthetic sources.
+The appearance slice covers home, physical/merged/nested rows, short header dividers, a single
+menu/search row, bottom address, resizable Details, preferences and Light/Dark themes. The current
+file-action slice checks physical context menus, Rename, Paste and permanent-delete confirmation.
+Native screenshots/logs are ignored under artifacts; they are manual evidence, not a maintained
+screenshot-test suite.
 
-Built and launched the actual eframe/Glow executable under Xvfb with Mesa software rendering.
-Inspected native light and dark windows at 1180×760, including list alignment, panels, selection
-colors and disabled actions. A native XTest Ctrl+O opened the source dialog; Escape dismissed it.
-The GUI used isolated XDG config/cache/state directories and a synthetic local sample library.
-No browser, HTML mockup, webview or UI-control server was used.
+## Remaining limits
 
-Screenshots and logs are ignored developer artifacts under `artifacts/`; they are not release
-assets or committed baselines. Tests run without needing those artifacts.
-
-## Initial slice limits (mounted-source updates below supersede those items)
-
-- Native X11/software OpenGL and egui synthetic-input coverage only. No native Wayland/compositor,
-  hardware GPU, screen-reader, mixed-DPI/multi-monitor or fractional-scaling acceptance is claimed.
-- Toolkit fallback typography, text-only actions and limited default glyph coverage remain visible.
-  Target Inter/JetBrains Mono fonts, Lucide icons and desktop text-scale/motion discovery are pending.
-  The reduced-motion toggle disables normal style animation, but complete platform scroll/animation
-  adaptation is not implemented and must not be advertised as complete.
-- A root path is user-selected and reopened for each request; it is not a permanent filesystem
-  identity. NFS mount-disappearance/identity handling, source persistence and configuration parsing
-  remain deferred. Source root symlinks and symlink navigation are refused in the current adapter.
-- Traversal is one directory deep, limited to 50,000 entries. No recursive search/index, merge,
-  filesystem notifications, mpv/rsync, transfer/recovery operation or permission editor exists yet.
-- Cancellation is cooperative between entries, not interruption of a blocked kernel syscall.
-  Exactly two reader workers and bounded queues prevent unbounded replacement threads. New work
-  can report busy if they are occupied. Shutdown does not join indefinitely blocked IO workers.
-- No automated architecture/asset validation task, packaging workflow or hosted CI is present.
-
-## Optional mounted sources and collections (2026-10-31)
-
-The expanded workspace suite has 20 passing tests: core 4, platform 5, engine 7 and native-egui
-interaction 4. Added evidence covers exact-byte/case-sensitive folder merging, non-UTF-8 name
-separation, duplicate file retention, four synthetic disk roots, recursive collection navigation,
-physical browsing, unavailable contributors and refresh recovery. Configuration tests cover
-validation, private atomic replacement, preservation after invalid saves, unknown/oversized input,
-request replay and restart without a scan. The settings interaction test creates a source and
-collection through the editor, saves them, browses and navigates Up. Test input waits for layout
-and scrolls fields into view before clicking; accessibility checks remain enabled.
-
-The NFS guard has synthetic mountinfo cases for missing/wrong/local/bind-subtree mounts and an
-actual temporary local directory that must never be enumerated as an expected NFS export.
-Temporarily disabling the guard makes that test fail; temporarily disabling directory grouping
-makes the four-disk engine test fail. The correct implementations were restored and checks rerun.
-No real NFS unmount, server modification or library mutation was used as a test.
-
-Native Xvfb/Mesa runs at 1180×760 in Light and Dark used a separate synthetic four-disk library,
-isolated XDG paths and XTest mouse input. Inspected idle startup with restored definitions, the
-merged Movies row with four location contributors, physical Details, entering the title to
-see four separate same-name files, and scrolling Settings to the collection-member fields. Captures/scripts/logs remain ignored artifacts. Headless `--list-collection` emits all
-four physical contributors using the same engine. Fmt, all-target workspace check, Clippy with
-warnings denied and workspace tests pass.
-
-A read-only SSH inspection of the authorized NAS confirmed the disk/category layout; its personal
-inventory/configuration was not copied into Git. Exports, mounts, permissions and contents were
-not changed. Live NFS connection/reconnect acceptance, native Wayland, screen readers and mixed-DPI
-acceptance remain unverified. NFS configuration remains system administration, and mount checks
-are per read rather than continuous monitoring. Aliases, cached search and playback remain pending.
-
-## File-manager polish, applications and guarded recovery (2026-10-31)
-
-The final suite has **39 passing tests**: core 6, engine 11, platform 13 and UI 9 (one settings regression and eight interactions).
-The settings regression preserves multiple collection folders on one source and the explicit root
-allowlist through editing; this test fails against the previous editor implementation, which collapsed those
-member paths. Additional coverage includes inline expansion/collapse and generation invalidation, recursive name
-search with distinct physical hits, address navigation retaining source identity, source policy and
-single-use preview/confirm/restore flows, literal external-process arguments, and generic example
-configuration with recovery disabled. Existing byte-preserving identity and missing-mount tests remain.
-
-Recovery tests use synthetic local trees only. They exercise protected folders/ancestors/subtrees,
-virtual-target denial, stale entries and parent-symlink replacement, unsafe/private recovery storage,
-missing NFS mounts, permission refusal, restore collisions, non-UTF-8 names, and prepared-manifest
-reconciliation. Thread-local fault injection fails manifest persistence before and after rename:
-the original or recoverable payload remains intact. Empty pre-manifest jobs are reconciled without
-cleanup. Temporarily disabling protection evaluation makes its regression fail; disabling stale
-name checks makes the source-preservation regression fail. Implementations were restored afterward.
-No NAS contents were moved, deleted or used as fixtures.
-
-The UI tests create/save a generic source/collection, expand a folder without navigation, retain its
-parent while filtering, save an application through OK, and cancel then confirm a physical recovery
-move. The Delete shortcut requests a preview; the cancel path preserves the source. Accessibility
-checks remain enabled. Manual 100/125/150/200% scales retain menus and the folder dialog in egui input
-checks. Narrow logical widths fold side panels while menus retain source/collection access.
-
-The actual native eframe/Glow application was inspected with Xvfb/Mesa and XTest mouse input in both
-Light and Dark at a 1180×760 client area. Captures show text menus, full top-right search, neutral
-home panels, aligned metadata headers without vertical resize lines, 26-point nested rows, meaningful
-tinted icons, rounded selection and categorized Preferences. Native inspection caught and corrected
-search-field squeezing and header/row misalignment. The Light recovery preview shows one physical
-source/path and recovery destination; it was cancelled. Safeguards and appearance preferences were
-also inspected. Captures and scripts remain ignored under artifacts; no HTML mockup or webview was
-used. Default egui fonts remain in use; Inter is not claimed as shipped.
-
-Fmt, workspace/all-target check, Clippy with warnings denied and workspace tests pass. Headless
---list --search was exercised on the synthetic tree. Lucide SVG hashes match the pinned provenance
-record; licensing is retained beside assets. No vendor/toolkit patch or private design dependency.
-
-Deployment limits remain: no writable-NFS rename/fsync/disconnect/server-crash or real-library
-mutation acceptance. A read-only NAS inspection found NFS inactive. Server/client setup needs the
-intended PC's LAN address/access; no packages, exports, services, mounts or permissions were changed.
-Native Wayland, hardware GPUs, screen readers, mixed-DPI and native high-scale compositor acceptance
-remain unverified. See file-actions.md for persisted identity, durability and final-rename race limits.
-
-## Reference-style audit and verified typography (2026-10-31)
-
-Re-read the complete user request and compared the actual PdfCraft theme, appearance-card and
-font implementation with Archiv. docs/request-audit.md maps each requested item to implemented
-behavior or an explicit deployment/acceptance limitation. Actual NFS setup is still pending the
-PC address/access; a fresh read-only SSH service check returned inactive. Nothing on the NAS changed.
-
-Corrected the remaining reference typography mismatch: official Inter 4.1 Regular, Medium and
-SemiBold files match the reference's exact SHA-256 values. JetBrains Mono 2.304 is pinned for
-technical paths. The explicit Rust font tool acquires/verifies build inputs; the GUI build script
-verifies and copies their bytes before embedding. No font binaries are committed, and no runtime
-font filesystem/network IO or system-font redistribution was introduced. Complete OFL notices
-are retained and included in About. A fresh-cache acquisition fetched and verified all four faces.
-A deliberately changed face blocks the build, while a missing-cache/offline build passed the
-interaction suite with its documented fallback. The tool's synthetic integrity test also rejects
-changed and oversized data.
-
-The audit corrected exact selected-color tokens, title/card text weights, active field focus,
-shared hover/press timing, native theme command synchronization, whole-card theme selection,
-resolved-System active state and current-theme card surfaces. Cancel/Escape restore appearance;
-only a successful explicit apply advances the cancel baseline. Regression tests cover both
-successful and failed apply before Cancel. Existing file-manager behavior/safety tests still pass.
-
-Native Xvfb/Mesa Light and Dark windows were inspected again with the verified fonts, including
-home panels, menus/search, compact nested file rows and the updated appearance cards/blue actions.
-File paths use the verified monospace face. No HTML mockup or browser frontend was used; captures
-remain ignored artifacts. Native Wayland/hardware/mixed-DPI, screen-reader/IME and writable-NFS
-server failure acceptance remain unclaimed.
-
-Final verification: 42 tests (core 6, engine 11, platform 13, UI unit 1, UI interaction 10, font tool 1),
-workspace/all-target check, Clippy with warnings denied and formatting. The prepared font cache is
-an external ignored build input, documented in docs/fonts.md; PC rebuilds need that preparation
-step to reproduce the Inter appearance.
-
-## Single-row chrome and resizing (2026-10-31)
-
-The navigation toolbar, sidebar action duplicates and top-right theme selector were removed.
-File/Edit/View/Help retain the actions; the editable location shares the bottom status area.
-Three short header dividers resize adjacent columns and support focused Left/Right keys.
-Details content uses the pane width and wraps rather than imposing its text width.
-
-Verification: fmt, workspace/all-target check, Clippy with warnings denied, workspace tests
-(**45 passing**) and a native debug build, all locked with build parallelism limited to two.
-The 13 egui integration tests include menu-based Preferences access, bottom address submission
-through the real engine, Up/hidden-file menu access, a header drag that preserves later
-boundaries and idle geometry, and incremental Details drags with empty/long-filename content.
-The address test also covers Enter losing TextEdit focus before navigation is dispatched.
-
-Native X11/Xvfb/Mesa checks used four synthetic sources in Light and Dark: the single top row,
-clean source sidebar, short header separators, expanded duplicate rows, bottom address editing,
-View menu, and actual Details/header drags. Captures remain ignored under artifacts/v2-chrome-*.
-No NAS access or mutation was involved. Native Wayland and hardware compositor behavior remain
-outside this check; the synthetic resize cases do not establish every desktop-specific gesture.
+No live writable NFS/disconnect/server-power-loss or real-library mutation test was performed.
+No native Wayland/hardware compositor, complete IME/screen-reader, mixed-DPI or desktop text/motion
+discovery acceptance is claimed. Snapshot/descriptor checks do not close the Linux final-filename
+race against hostile concurrent writers. See file-actions.md for exact scope, staging, cancellation
+and durability limitations. No copy metadata preservation or system file-clipboard interoperability.

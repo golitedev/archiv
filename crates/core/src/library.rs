@@ -24,9 +24,9 @@ pub struct LibrarySettings {
     /// Configurable external applications.
     #[serde(default)]
     pub openers: crate::actions::Openers,
-    /// Deny-by-default recovery permissions and protections.
+    /// Deny-by-default file-change permissions and protections.
     #[serde(default)]
-    pub recovery: Vec<crate::actions::RecoveryPolicy>,
+    pub writes: Vec<crate::actions::WritePolicy>,
     /// Physical roots, at most 32.
     pub sources: Vec<Source>,
     /// Optional merged folders, at most 16.
@@ -37,7 +37,7 @@ impl Default for LibrarySettings {
         Self {
             version: 1,
             openers: Default::default(),
-            recovery: Vec::new(),
+            writes: Vec::new(),
             sources: Vec::new(),
             collections: Vec::new(),
         }
@@ -58,7 +58,6 @@ impl LibrarySettings {
                 || !ids.insert(source.id)
                 || !roots.insert(&source.root)
                 || !source.root.is_absolute()
-                || source.root.components().any(|c| c.as_os_str() == crate::actions::RECOVERY_DIR)
                 || source.root.as_os_str().len() > 16384
                 || source.root.components().any(|c| matches!(c, std::path::Component::ParentDir))
                 || source.label.trim().is_empty()
@@ -74,16 +73,16 @@ impl LibrarySettings {
             }
         }
         let mut policies = HashSet::new();
-        if self.recovery.len() > 32 {
-            return Err("Too many recovery policies".into());
+        if self.writes.len() > 32 {
+            return Err("Too many file-change policies".into());
         }
-        for policy in &self.recovery {
+        for policy in &self.writes {
             if !ids.contains(&policy.source)
                 || !policies.insert(policy.source)
                 || policy.allowed.len() > 128
                 || policy.protected.len() > 128
             {
-                return Err("Invalid, duplicate or oversized recovery policy".into());
+                return Err("Invalid, duplicate or oversized file-change policy".into());
             }
         }
         let mut collection_ids = HashSet::new();
@@ -183,7 +182,7 @@ mod tests {
         config.sources.push(Source { id: SourceId(2), ..config.sources[0].clone() });
         assert!(config.validate().is_err());
         config.sources.pop();
-        config.version = 2;
+        config.version = 99;
         assert!(config.validate().is_err());
     }
 }

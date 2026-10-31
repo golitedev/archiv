@@ -1,6 +1,6 @@
 # Architecture
 
-Status: native browsing/collections, external applications and opt-in recovery implemented; remaining sections describe future work. Updated: 2026-10-31.
+Status: native browsing/collections, external applications and opt-in file actions implemented; remaining sections describe future work. Updated: 2026-10-31.
 
 ## Goal and boundaries
 
@@ -18,13 +18,13 @@ Do not couple the domain model to `/mnt/diskN`, a username, one SSH alias or a s
 | --- | --- | --- |
 | `archiv-core` | source/entry/collection IDs, physical paths, aliases, operation intents, policy data, deterministic merge and policy rules | none |
 | `archiv-platform` | filesystem enumeration/identity, safe mutation primitives, process execution, SSH/rsync/mpv adapters, persistence adapters | core |
-| `archiv-engine` | use cases, planning/revalidation, job state, worker scheduling, index orchestration, recovery journal | core, platform |
+| `archiv-engine` | use cases, planning/revalidation, job state, worker scheduling, index orchestration, file-action previews | core, platform |
 | `archiv-ui-egui` | egui views, tokens/widgets, command dispatch, input/accessibility, presentation state | core, engine |
 | `archiv` (`apps/archiv`) | native entry point, configuration/runtime startup and dependency wiring | engine, platform, ui-egui |
 
 Core models, the Linux directory reader, the bounded browsing engine and the native shell now
 exist. The executable supports a GUI and `--list` through the same engine. The UI uses upstream
-egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. Opt-in recovery/restore and configurable external application launches are implemented.
+egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. Permanent delete, rename, copy/paste and configurable external application launches are implemented.
 No persistent index, transfer or SSH transport adapter is present. Enforce dependency direction
 in reviews; no automated layer checker exists yet.
 
@@ -67,20 +67,19 @@ targets, current capabilities and policy into a dry-run preview. Confirmation re
 not a display label. Execution revalidates configuration revision, targets, containment, mount
 identity and metadata. There is no public "delete this arbitrary path" widget convenience method.
 
-Recovery, transfers and permission changes are separate intents/capabilities. Read-only source
+Deletion, transfers and permission changes are separate intents/capabilities. Read-only source
 configuration is independent of actual NFS permissions; effective capability is their intersection.
 Record actual enforcement scope in the UI. Details: [safety.md](safety.md).
 
 ## Persistence and configuration
 
 Versioned JSON library settings are implemented; transfer configuration and a local SQLite metadata
-index are not. The supported example JSON contains placeholder sources and disabled recovery. Library version 1 rejects unknown
+index are not. The supported example JSON contains placeholder sources and disabled writes. Library version 1 rejects unknown
 fields and invalid references. Settings are saved by bounded engine workers using a private
 same-directory temporary file, file sync, atomic rename and parent-directory sync. A directory
 sync failure reports uncertain durability, even if the replacement is visible. Sources restore
 without a scan. Malformed files cause an actionable startup error and are never overwritten. Unknown destructive
-settings and malformed policies must not fall back to permissive defaults. Settings, jobs and
-journals need atomic updates, crash reconciliation and bounded growth; do not store credentials
+settings and malformed policies must not fall back to permissive defaults. Settings and future persistent jobs need atomic updates and bounded growth; do not store credentials
 in them. User-specific state follows XDG directories and stays out of Git.
 
 ## Desktop integration
@@ -97,13 +96,12 @@ packaging, CI services and a NAS agent. The design is
 small enough to revise as the first read-only slice supplies evidence; do not add a plugin framework
 or separate service for every crate.
 
-## Current recovery and application adapters
+## File-action and application adapters
 
-The engine admits single-use physical previews, recovery, inspection and restore through its same
-command path. Policy is deny-by-default and shared with UI availability explanations. Platform IO
-uses anchored descriptors, no-follow/no-cross-mount resolution, prepared manifests and atomic
-no-replace rename. See file-actions.md for durability, final filename-race limits and test evidence.
-Application launches are structured worker operations with bounded child tracking/reaping. Rendering
-never scans storage, waits for a process, installs NFS packages or edits mount configuration.
-Inline branches share the fixed worker pool and view generation; recursive search is explicit and
-bounded, not a scan hidden behind text editing.
+The engine admits Copy/Paste, Rename and single-use Delete previews/confirmation. Policy is
+shared with UI availability. Platform IO uses anchored descriptors, no-follow/no-cross-mount
+resolution, bounded preflight, no-overwrite rename/copy and explicit cancellation. Copy stages
+then publishes a new destination without removing the source. Delete unlinks confirmed physical
+items. See file-actions.md for partial results, staging, concurrency and durability limits.
+Application launches are structured worker operations with bounded child tracking/reaping.
+Rendering never scans storage, waits for a process or edits NFS/mount configuration.

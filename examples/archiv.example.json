@@ -8,7 +8,7 @@
     {"id": 1, "label": "Documents", "members": [{"source": 1, "path": "documents"}, {"source": 2, "path": "work/documents"}]}
   ],
   "openers": {"images": "", "media": "", "text": "", "other": ""},
-  "recovery": [
+  "writes": [
     {"source": 1, "enabled": false, "allowed": ["documents"], "protected": [{"path": "documents", "subtree": false}]},
     {"source": 2, "enabled": false, "allowed": ["work/documents"], "protected": [{"path": "work", "subtree": false}]}
   ]

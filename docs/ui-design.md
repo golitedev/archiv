@@ -113,7 +113,7 @@ Turning animation off changes timing, not the distance of a scroll or the result
 ## Archiv layout and content
 
 - Left navigation: user-configured merged collections (no fixed media categories) and physical sources.
-  Virtual collection icons/labels differ from physical source locations. Recovery is in File.
+  Virtual collection icons/labels differ from physical source locations. File actions are in Edit and row context menus.
 - Top area: a single row with Archiv branding, File/Edit/View/Help and search. Navigation actions
   live in menus; theme selection lives only in Preferences. The editable location sits at the bottom. A future Ctrl+K
   command palette shares command definitions with menus and shortcuts. Do not add a second action registry.
@@ -125,8 +125,8 @@ Turning animation off changes timing, not the distance of a scroll or the result
   No invented percentage when totals are unknown. Folder-size discovery is cancellable background work.
 - Native mpv opens an explicit physical file. Show which location is chosen when duplicates exist.
   Slow operations don't block selection, typing, scrolling or closing the window.
-- Use plain language: "Move to recovery", "Restore", "Copy" and eventually "Permanently delete".
-  Do not call a recoverable move "freed space". Avoid implementation jargon in routine product flows.
+- Use plain language: Open, Copy, Paste, Rename and Delete. Confirmation says Delete permanently
+  and lists the physical scope. Avoid implementation jargon in routine product flows.
 
 ## Input, accessibility and localization readiness
 
@@ -136,7 +136,7 @@ when UI exists. Every primary workflow must support keyboard operation.
 
 Keyboard paths: Tab/Shift+Tab focus, Enter activation/open, Escape cancel/dismiss, normal Linux
 Ctrl shortcuts and selection modifiers. Destructive keys use the same engine command/policy route
-as buttons; Shift+Delete must never secretly bypass recovery. Context-menu and toolbar actions
+as buttons; Shift+Delete must never bypass confirmation or policy. Context-menu and toolbar actions
 must agree. Text entry consumes editing shortcuts before file actions; typing in search must never
 delete selected rows. Drag/drop requires a destination preview and explicit move/copy semantics.
 Dialogs have a deliberate focus order, an accessible title and a safe cancel route; opening them
@@ -175,7 +175,7 @@ windows and repaint only for state/input/animation changes. Bound thumbnail deco
 GPU cache memory and work admitted per frame as visual previews are introduced. Late results carry
 source/view generations; stale results cannot replace newer entries or leak textures. Release
 unused visual resources when views close. A renderer startup/device failure reports an actionable
-error; evaluate a supported fallback rather than assuming every Arch GPU works. The initial renderer is Glow/OpenGL. No alternate renderer or device-recovery mechanism is implemented.
+error; evaluate a supported fallback rather than assuming every Arch GPU works. The initial renderer is Glow/OpenGL. No alternate renderer or automatic device reset is implemented.
 
 Before a UI slice is called complete, inspect actual native light/dark output on synthetic data,
 keyboard and focus behavior, scaling, empty/loading/offline/error states, long labels and duplicate
@@ -189,7 +189,7 @@ coverage and outstanding limitations; requirements in these documents are not pa
 ## Destructive UI rules
 
 Virtual categories and whole-source roots have no delete command. A mutation preview names every
-physical contributor affected, its source, estimated size and recovery destination; a title that
+physical contributor affected, its source, estimated size and physical paths; a title that
 exists on multiple disks requires explicit scope. Show denied rules and unavailable capabilities.
 Confirmation is bound to a plan revision and revalidated by the engine; a UI toggle cannot grant
 filesystem authority. Permission editing and permanent purge are separate workflows, not context
@@ -198,8 +198,8 @@ menu shortcuts hidden behind a modifier. See safety.md for enforceable behavior 
 ## Implemented file-manager chrome
 
 File/Edit/View/Help use ordinary text menus in the sole top row, alongside branding and search.
-View contains location entry, Up, Refresh, Cancel scan and hidden-file visibility; Edit contains
-Preferences and File contains Recovery. The bottom location control supports Ctrl+L and Enter. Home tasks use rounded neutral inset panels. Preferences groups appearance,
+View contains location entry, Up, Refresh, Cancel operation and hidden-file visibility; Edit contains
+Preferences; Edit and context menus contain file actions. The bottom location control supports Ctrl+L and Enter. Home tasks use rounded neutral inset panels. Preferences groups appearance,
 sources, collections, applications and safeguards, with blue primary pill buttons. Compact file
 rows are 26 logical points with rounded selection, disclosure arrows and meaningful tinted SVGs.
 Metadata columns have aligned headers and short draggable dividers confined to the header.
