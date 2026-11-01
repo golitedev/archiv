@@ -52,7 +52,7 @@ empty collections must be removed or given another member before saving.
 Folders combine only when their exact filename bytes match, case-sensitively, at each browsed
 level. Every contributing directory stays attached to its virtual row. Files with identical
 names are separate rows with source labels and physical paths in Details; no deduplication,
-renaming, movement or on-disk pooling occurs. Up/Alt+Up returns within the collection. Missing
+renaming, movement or on-disk pooling occurs. Back/Forward preserves the collection and its physical contributors. Missing
 contributors produce an incomplete-results error with physical context; Refresh retries them.
 No recursive scan runs merely because a collection exists.
 

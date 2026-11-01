@@ -5,7 +5,7 @@ Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, nev
 ## Automated checks
 
 Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
-with warnings denied, 47 passing tests and a native debug build. The tests cover byte-preserving identities,
+with warnings denied, 51 passing tests and a native debug build. The tests cover byte-preserving identities,
 merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
 policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
@@ -66,3 +66,16 @@ library storage. A native X11 launch with isolated config/data directories follo
 Quit wrote presentation/window state in the config directory; no `archiv/app.ron` appeared in
 XDG_DATA_HOME. No migration or compatibility reader is present. Workspace fmt/check/Clippy and
 all 47 tests passed; the native executable was rebuilt for this persistence check.
+
+## Back/Forward navigation (2026-11-01)
+
+The search icon is replaced by Back/Forward Lucide chevrons. Navigation uses typed engine
+commands shared with View, Alt+Left/Alt+Right and egui Extra1/Extra2 mouse releases (mapped by
+egui-winit to native Back/Forward buttons). Up and its shortcut are removed.
+
+Engine fixtures cover physical locations, collection contributor identity across sources,
+recursive search restoration, branch replacement, refresh exclusion, rejected navigation,
+128-entry bounds and repeated layout dispatch. An egui interaction test drives the chevrons,
+keyboard and mouse side buttons and checks that a modal blocks side-button navigation. Native
+X11 checks inspect Light/Dark toolbar placement and exercise folder/back/forward navigation with
+synthetic files. Physical hardware/Wayland mouse acceptance remains outside this environment.

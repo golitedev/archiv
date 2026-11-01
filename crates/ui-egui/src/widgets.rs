@@ -50,6 +50,20 @@ pub fn pill(ui: &mut egui::Ui, text: &str, primary: bool, t: &Tokens) -> Respons
     }
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
+pub fn navigation_button(ui: &mut egui::Ui, name: &str, icon_name: &str, enabled: bool, t: &Tokens) -> Response {
+    let response = ui
+        .add_enabled(
+            enabled,
+            egui::Button::image(icon(icon_name, 17.0, t.text)).frame(false).min_size(egui::vec2(30.0, 30.0)),
+        )
+        .accessible_name(name)
+        .on_hover_text(if name == "Back" { "Back · Alt+Left" } else { "Forward · Alt+Right" })
+        .on_disabled_hover_text(if name == "Back" { "No previous location" } else { "No next location" });
+    if response.has_focus() {
+        ui.painter().rect_stroke(response.rect, 6, egui::Stroke::new(1.5, t.accent), egui::StrokeKind::Inside);
+    }
+    response
+}
 pub fn card(t: &Tokens) -> egui::Frame {
     egui::Frame::new().fill(t.card).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(12).inner_margin(18)
 }
@@ -71,6 +85,7 @@ pub fn icon(name: &str, size: f32, tint: Color32) -> egui::Image<'static> {
             ("media", asset!("film")),
             ("music", asset!("file-text")),
             ("right", asset!("chevron-right")),
+            ("left", asset!("chevron-left")),
             ("down", asset!("chevron-down")),
             ("search", asset!("search")),
             ("source", asset!("folder")),

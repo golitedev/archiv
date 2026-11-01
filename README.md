@@ -28,7 +28,7 @@ Fonts are verified build inputs embedded in the executable; builds without input
 fallbacks. No runtime downloads. [Font preparation](docs/fonts.md), [asset notices](docs/third-party-assets.md).
 
 Ctrl+O opens a folder, Ctrl+L edits the bottom address, Ctrl+F focuses search, F5 refreshes and
-Alt+Up navigates to the parent. Folder arrows expand in place; double-click/Enter opens.
+Back/Forward chevrons, Alt+Left/Alt+Right and mouse side buttons revisit navigation history. Folder arrows expand in place; double-click/Enter opens.
 Search filters visible rows; Enter explicitly searches subfolders. Ctrl+C/ Ctrl+V copy/paste,
 F2 renames, Delete requests confirmation. Editing text consumes its normal input shortcuts.
 View → Cancel operation requests cancellation; completed changes may remain.

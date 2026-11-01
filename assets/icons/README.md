@@ -12,6 +12,7 @@ See LICENSE-lucide.txt. Runtime tinting uses Archiv semantic tokens and 1.75-poi
 | file-text.svg | 56582e205bca1dc510113d529ea45e5ff83fc19761cafd23b94f72f3b3b83844 |
 | image.svg | 619c9db58c879dce6250376ba67d9c9102ca6dbb3b1efb9294c9f180e22273a5 |
 | film.svg | 3271f1e5b684d2d60f0370f074fb87d611a138162d27959cb3ec5260eb912771 |
+| chevron-left.svg | 9d4c68b2301b07a424056d43a7cda715678be2b10d5344183261a3b48a752d36 |
 | chevron-right.svg | 2758143d7b2434e4aa7307dfd34405c87909ff4052f21b5f3f40d45224b4f19b |
 | chevron-down.svg | 66ea878e72ed3488bb3b464c39dfdccee8d1f78e560dccea40e5e12da0e87e87 |
 | search.svg | 283d371c2e433817bb9c0c8310caa6c77fa4177c0f4f1168d9c83b97af7389dc |

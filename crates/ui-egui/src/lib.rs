@@ -89,6 +89,7 @@ impl ArchivApp {
     }
     fn dispatch(&mut self, frame: u64, command: Command) {
         let searching = matches!(&command, Command::Search(_));
+        let revisiting = matches!(&command, Command::Back | Command::Forward);
         let navigation = matches!(
             command,
             Command::AddSource(_)
@@ -96,7 +97,8 @@ impl ArchivApp {
                 | Command::Navigate(_)
                 | Command::BrowseCollection(_)
                 | Command::Open(_)
-                | Command::Up
+                | Command::Back
+                | Command::Forward
                 | Command::Refresh
                 | Command::Search(_)
         );
@@ -104,9 +106,13 @@ impl ArchivApp {
             Ok(()) => {
                 self.error = None;
                 if navigation {
-                    if !searching {
+                    if revisiting {
+                        self.query = self.browser.search_query().unwrap_or_default().to_owned();
+                    } else if !searching {
                         self.query.clear();
                     }
+                    self.edit_location = false;
+                    self.focus_location = false;
                     self.selected = None;
                 }
             }
@@ -194,8 +200,22 @@ impl ArchivApp {
         let modal = self.add_source
             || self.settings.is_some()
             || self.browser.delete_preview().is_some()
-            || self.rename.is_some();
+            || self.rename.is_some()
+            || self.about;
         if !modal {
+            let back = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft)
+                    || i.pointer.button_released(egui::PointerButton::Extra1)
+            });
+            let forward = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight)
+                    || i.pointer.button_released(egui::PointerButton::Extra2)
+            });
+            if back && self.browser.can_back() {
+                command = Some(Command::Back);
+            } else if forward && self.browser.can_forward() {
+                command = Some(Command::Forward);
+            }
             if !ctx.text_edit_focused() {
                 if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::C))
                     && let Some(id) = &self.selected
@@ -221,9 +241,6 @@ impl ArchivApp {
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5)) {
                 command = Some(Command::Refresh);
-            }
-            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp)) && self.browser.can_up() {
-                command = Some(Command::Up);
             }
             if !self.edit_location
                 && !ctx.text_edit_focused()
@@ -289,16 +306,31 @@ impl ArchivApp {
                                     self.edit_actions(ui, &mut command);
                                 });
                                 ui.menu_button("View", |ui| {
-                                    if ui.button("Enter a location…    Ctrl+L").clicked() {
-                                        self.edit_address();
+                                    if ui
+                                        .add_enabled(
+                                            self.browser.can_back(),
+                                            egui::Button::new("Back").shortcut_text("Alt+Left"),
+                                        )
+                                        .on_disabled_hover_text("No previous location")
+                                        .clicked()
+                                    {
+                                        command = Some(Command::Back);
                                         ui.close();
                                     }
                                     if ui
-                                        .add_enabled(self.browser.can_up(), egui::Button::new("Up    Alt+Up"))
-                                        .on_disabled_hover_text("Already at the root")
+                                        .add_enabled(
+                                            self.browser.can_forward(),
+                                            egui::Button::new("Forward").shortcut_text("Alt+Right"),
+                                        )
+                                        .on_disabled_hover_text("No next location")
                                         .clicked()
                                     {
-                                        command = Some(Command::Up);
+                                        command = Some(Command::Forward);
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.button("Enter a location…    Ctrl+L").clicked() {
+                                        self.edit_address();
                                         ui.close();
                                     }
                                     if ui
@@ -901,7 +933,7 @@ impl ArchivApp {
                         widgets::text_field(&mut self.query)
                             .id(egui::Id::unique("filename-filter"))
                             .hint_text("Search…  Enter for subfolders")
-                            .desired_width((ui.available_width() - 24.0).clamp(70.0, 240.0))
+                            .desired_width((ui.available_width() - 76.0).clamp(70.0, 240.0))
                             .char_limit(4096)
                             .margin(egui::Margin::symmetric(12, 7)),
                     )
@@ -914,7 +946,12 @@ impl ArchivApp {
             if !modal && ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
                 search.request_focus();
             }
-            ui.add(widgets::icon("search", 16.0, t.muted));
+            if widgets::navigation_button(ui, "Forward", "right", !modal && self.browser.can_forward(), t).clicked() {
+                *command = Some(Command::Forward);
+            }
+            if widgets::navigation_button(ui, "Back", "left", !modal && self.browser.can_back(), t).clicked() {
+                *command = Some(Command::Back);
+            }
         });
     }
     fn file_list(&mut self, ui: &mut egui::Ui, t: &theme::Tokens, command: &mut Option<Command>) {

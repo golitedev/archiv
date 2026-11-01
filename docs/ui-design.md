@@ -199,7 +199,7 @@ menu shortcuts hidden behind a modifier. See safety.md for enforceable behavior 
 ## Implemented file-manager chrome
 
 File/Edit/View/Help use ordinary text menus in the sole top row, alongside branding and search.
-View contains location entry, Up, Refresh, Cancel operation and hidden-file visibility; Edit contains
+View contains Back/Forward, location entry, Refresh, Cancel operation and hidden-file visibility; Edit contains
 Preferences; Edit and context menus contain file actions. The bottom location control supports Ctrl+L and Enter. Home tasks use rounded neutral inset panels. Preferences groups appearance,
 sources, collections, applications and safeguards, with blue primary pill buttons. Compact file
 rows are 26 logical points with rounded selection, disclosure arrows and meaningful tinted SVGs.
@@ -212,3 +212,10 @@ copying its branding, PDF-specific workflows or toolkit forks.
 Source and collection navigation labels truncate within the requested sidebar width, retaining
 full accessible names and hover text. Content must not impose a larger minimum width on either
 resizable pane; scrolling fills the requested pane geometry.
+
+Back/Forward chevrons sit immediately left of search, replacing the search icon. They use the
+same engine commands as View, Alt+Left/Alt+Right and mouse Back/Forward buttons. Disabled buttons
+explain the absence of a previous/next location. There is no separate Up action. Navigation
+history is session-only and bounded to 128 remembered locations; changing direction preserves
+physical sources, collection contributors and recursive search queries. New navigation after
+Back discards the forward branch. Modal dialogs suppress navigation shortcuts and side buttons.

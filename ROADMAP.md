@@ -8,6 +8,7 @@ Updated: 2026-10-31. This is a new application with one current configuration fo
   explicit bounded recursive search, source identity and missing-NFS-mount refusal.
 - One menu/search row, bottom editable location, configurable side panes, header-only column
   resizing, shared theme tokens, Inter/JetBrains Mono build inputs and licensed Lucide icons.
+- Back/Forward navigation through shared engine history, chevron controls, keyboard shortcuts and mouse side buttons.
 - Configurable external applications with structured argument launches.
 - Physical file/folder context menus: Open, Copy, Copy path, Paste, Rename and permanent Delete.
   Edit and shortcuts use the same engine commands. Copy uses a session clipboard.

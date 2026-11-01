@@ -57,7 +57,7 @@ fn folder_dialog_filter_selection_and_navigation_use_real_read_only_engine() {
     assert_eq!(std::fs::read(fixture.path().join("Series/episode.mkv")).unwrap(), b"untouched");
     h.get_by_label("episode.mkv").click();
     h.run_steps(2);
-    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowUp);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
     h.run_steps(2);
     settle(&mut h);
     assert!(h.state().browser().view().location.as_ref().unwrap().path.as_path().as_os_str().is_empty());
@@ -153,7 +153,7 @@ fn settings_creates_saved_optional_collection_and_browses_it() {
     h.run_steps(2);
     settle(&mut h);
     assert_eq!(h.state().browser().view().entries[0].name, "movie.mkv");
-    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowUp);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
     h.run_steps(2);
     settle(&mut h);
     assert_eq!(h.state().browser().view().entries[0].name, "Title");
@@ -412,7 +412,7 @@ fn bottom_address_and_menu_navigation_replace_the_toolbar() {
     h.run_steps(3);
     h.get_by_label("View").click();
     h.run_steps(3);
-    h.get_by_label("Up    Alt+Up").click();
+    h.get_by_label("Back Alt+Left").click();
     h.run_steps(3);
     settle(&mut h);
     assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new(""));
@@ -582,4 +582,67 @@ fn sources_splitter_tracks_small_drags_with_long_navigation_labels() {
     h.drop_at(start);
     h.run_steps(5);
     assert!((h.get_by_label("NAME").rect().left() - initial).abs() < 2.0);
+}
+
+#[test]
+fn navigation_buttons_keyboard_and_mouse_side_buttons_share_history() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fixture.path().join("child")).unwrap();
+    let mut h = harness().unwrap();
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    assert!(!h.state().browser().can_back());
+    assert!(!h.state().browser().can_forward());
+    h.get_by_label("child").click();
+    h.run_steps(2);
+    h.get_by_label("Open selected folder").click();
+    h.run_steps(2);
+    settle(&mut h);
+    assert!(h.state().browser().can_back());
+    h.get_by_label("Back").click();
+    h.run_steps(3);
+    settle(&mut h);
+    assert!(h.state().browser().view().location.as_ref().unwrap().path.as_path().as_os_str().is_empty());
+    h.get_by_label("Forward").click();
+    h.run_steps(3);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new("child"));
+    for (button, child) in [(egui::PointerButton::Extra1, false), (egui::PointerButton::Extra2, true)] {
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos: egui::pos2(500.0, 400.0),
+                button,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.run_steps(3);
+        settle(&mut h);
+        assert_eq!(
+            h.state().browser().view().location.as_ref().unwrap().path.as_path() == std::path::Path::new("child"),
+            child
+        );
+    }
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::O);
+    h.run_steps(3);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos: egui::pos2(500.0, 400.0),
+            button: egui::PointerButton::Extra1,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(3);
+    assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new("child"));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+    h.run_steps(3);
+    settle(&mut h);
+    assert!(h.state().browser().view().location.as_ref().unwrap().path.as_path().as_os_str().is_empty());
+    h.key_press_modifiers(egui::Modifiers::ALT, egui::Key::ArrowRight);
+    h.run_steps(3);
+    settle(&mut h);
+    assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new("child"));
 }

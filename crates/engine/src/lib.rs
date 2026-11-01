@@ -20,8 +20,10 @@ pub enum Command {
     BrowsePath(PathBuf),
     /// Browse a configured virtual collection at its root.
     BrowseCollection(u64),
-    /// Navigate back within the current physical or virtual view.
-    Up,
+    /// Revisit the previous physical/collection/search location.
+    Back,
+    /// Revisit the next location after Back.
+    Forward,
     /// Validate and atomically save explicit library settings in a worker.
     SaveLibrary(LibrarySettings),
     /// Browse within a registered source; symlink resolution is rejected by the adapter.
@@ -188,6 +190,14 @@ enum Update {
     BackgroundError(String),
 }
 
+const NAVIGATION_LIMIT: usize = 128;
+#[derive(Clone, PartialEq, Eq)]
+struct Navigation {
+    locations: Vec<Location>,
+    collection: Option<u64>,
+    search: Option<String>,
+}
+
 /// Two bounded workers shared by browsing, configured application launches and opt-in file actions.
 pub struct Browser {
     sources: Vec<Source>,
@@ -203,7 +213,9 @@ pub struct Browser {
     settings_pending: bool,
     settings_status: Option<String>,
     locations: Vec<Location>,
-    history: Vec<Vec<Location>>,
+    back: std::collections::VecDeque<Navigation>,
+    forward: std::collections::VecDeque<Navigation>,
+    search_query: Option<String>,
     branches: HashMap<EntryId, Branch>,
     operation_pending: bool,
     operation_status: Option<String>,
@@ -403,7 +415,9 @@ impl Browser {
             settings_pending: false,
             settings_status: None,
             locations: Vec::new(),
-            history: Vec::new(),
+            back: Default::default(),
+            forward: Default::default(),
+            search_query: None,
             branches: HashMap::new(),
             operation_pending: false,
             operation_status: None,
@@ -420,6 +434,8 @@ impl Browser {
         self.next_source = settings.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
         self.sources = settings.sources.clone();
         self.library = settings;
+        self.back.clear();
+        self.forward.clear();
         self.settings_path = Some(path);
         Ok(())
     }
@@ -435,13 +451,17 @@ impl Browser {
     pub fn settings_pending(&self) -> bool {
         self.settings_pending
     }
-    /// Whether parent navigation is available in the current view.
-    pub fn can_up(&self) -> bool {
-        if self.view.collection.is_some() {
-            !self.history.is_empty()
-        } else {
-            self.view.location.as_ref().is_some_and(|l| l.path.parent().is_some())
-        }
+    /// Whether a previous navigation entry is available.
+    pub fn can_back(&self) -> bool {
+        !self.back.is_empty()
+    }
+    /// Whether a forward navigation entry is available.
+    pub fn can_forward(&self) -> bool {
+        !self.forward.is_empty()
+    }
+    /// Query belonging to the current recursive-search location.
+    pub fn search_query(&self) -> Option<&str> {
+        self.search_query.as_deref()
     }
 
     /// Explicit sources only; startup never scans the home directory automatically.
@@ -473,7 +493,11 @@ impl Browser {
                 if query.is_empty() || query.len() > 4096 || self.locations.is_empty() {
                     return Err(EngineError("Open a folder and enter a search query (up to 4096 bytes)".into()));
                 }
-                self.start_listing(self.locations.clone(), self.view.collection, Some(query))
+                self.visit(Navigation {
+                    locations: self.locations.clone(),
+                    collection: self.view.collection,
+                    search: Some(query),
+                })
             }
             Command::Expand(id) => self.expand(id),
             Command::DismissDelete => {
@@ -589,22 +613,10 @@ impl Browser {
                     .ok_or_else(|| EngineError("Unknown collection".into()))?
                     .members
                     .clone();
-                self.start(members, Some(id))?;
-                self.history.clear();
-                Ok(())
+                self.visit(Navigation { locations: members, collection: Some(id), search: None })
             }
-            Command::Up => {
-                if let Some(previous) = self.history.last().cloned().filter(|_| self.view.collection.is_some()) {
-                    self.start(previous, self.view.collection)?;
-                    self.history.pop();
-                    Ok(())
-                } else {
-                    let location =
-                        self.view.location.as_ref().ok_or_else(|| EngineError("Open a folder first".into()))?;
-                    let path = location.path.parent().ok_or_else(|| EngineError("Already at root".into()))?;
-                    self.navigate(Location { source: location.source, path })
-                }
-            }
+            Command::Back => self.travel(false),
+            Command::Forward => self.travel(true),
             Command::AddSource(root) => self.add_source(root),
             Command::BrowsePath(path) => {
                 if !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
@@ -641,13 +653,7 @@ impl Browser {
                         .cloned()
                         .ok_or_else(|| EngineError("Folder contributors unavailable".into()))?;
                     let locations = ids.into_iter().map(|id| Location { source: id.source, path: id.path }).collect();
-                    let previous = self.locations.clone();
-                    if self.history.len() >= 256 {
-                        return Err(EngineError("Navigation depth limit reached".into()));
-                    }
-                    self.start(locations, Some(collection))?;
-                    self.history.push(previous);
-                    Ok(())
+                    self.visit(Navigation { locations, collection: Some(collection), search: None })
                 } else {
                     self.navigate(Location { source: id.source, path: id.path })
                 }
@@ -700,8 +706,43 @@ impl Browser {
         self.navigate(Location { source: id, path: RelativePath::default() })
     }
     fn navigate(&mut self, location: Location) -> Result<(), EngineError> {
-        self.start(vec![location], None)?;
-        self.history.clear();
+        self.visit(Navigation { locations: vec![location], collection: None, search: None })
+    }
+
+    fn current_navigation(&self) -> Option<Navigation> {
+        (!self.locations.is_empty()).then(|| Navigation {
+            locations: self.locations.clone(),
+            collection: self.view.collection,
+            search: self.search_query.clone(),
+        })
+    }
+    fn visit(&mut self, next: Navigation) -> Result<(), EngineError> {
+        let previous = self.current_navigation();
+        self.start_listing(next.locations.clone(), next.collection, next.search.clone())?;
+        if previous.as_ref() != Some(&next) {
+            if let Some(previous) = previous {
+                self.back.push_back(previous);
+                if self.back.len() > NAVIGATION_LIMIT {
+                    self.back.pop_front();
+                }
+            }
+            self.forward.clear();
+        }
+        Ok(())
+    }
+    fn travel(&mut self, forward: bool) -> Result<(), EngineError> {
+        let next = if forward { self.forward.back() } else { self.back.back() }
+            .cloned()
+            .ok_or_else(|| EngineError(if forward { "No next location" } else { "No previous location" }.into()))?;
+        let current = self.current_navigation().ok_or_else(|| EngineError("Open a folder first".into()))?;
+        self.start_listing(next.locations, next.collection, next.search)?;
+        if forward {
+            self.forward.pop_back();
+            self.back.push_back(current);
+        } else {
+            self.back.pop_back();
+            self.forward.push_back(current);
+        }
         Ok(())
     }
 
@@ -747,6 +788,7 @@ impl Browser {
         self.generation = generation;
         self.view.location = if collection.is_none() { locations.first().cloned() } else { None };
         self.view.search = search.is_some();
+        self.search_query = search.clone();
         self.view.pending = if search.is_some() { 1 } else { locations.len() };
         self.branches.clear();
         self.delete_preview = None;
@@ -824,7 +866,9 @@ impl Browser {
                         self.view.errors.clear();
                         self.view.summary = None;
                         self.locations.clear();
-                        self.history.clear();
+                        self.back.clear();
+                        self.forward.clear();
+                        self.search_query = None;
                         self.clipboard = None;
                         self.sources = settings.sources.clone();
                         self.next_source = self.sources.iter().map(|s| s.id.0).max().unwrap_or(0).saturating_add(1);
@@ -1306,12 +1350,12 @@ mod tests {
         browser.execute(3, Command::Open(extras)).unwrap();
         settle(&mut browser);
         assert!(browser.view.entries.is_empty());
-        browser.execute(4, Command::Up).unwrap();
+        browser.execute(4, Command::Back).unwrap();
         settle(&mut browser);
         assert_eq!(browser.view.entries.len(), 5);
-        browser.execute(5, Command::Up).unwrap();
+        browser.execute(5, Command::Back).unwrap();
         settle(&mut browser);
-        assert!(!browser.can_up());
+        assert!(!browser.can_back());
         browser
             .execute(
                 6,
@@ -1490,5 +1534,125 @@ mod tests {
         settle_all(&mut browser);
         assert!(!fixture.path().join("renamed.txt").exists());
         assert!(fixture.path().join("out/notes.txt").exists());
+    }
+    #[test]
+    fn back_forward_restore_locations_search_and_discard_a_branched_future() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir(fixture.path().join("one")).unwrap();
+        std::fs::create_dir(fixture.path().join("two")).unwrap();
+        std::fs::write(fixture.path().join("one/needle.txt"), b"safe").unwrap();
+        let mut browser = browser();
+        assert!(!browser.can_back());
+        assert!(!browser.can_forward());
+        browser.execute(1, Command::AddSource(fixture.path().to_owned())).unwrap();
+        settle_all(&mut browser);
+        let one = browser.view.entries.iter().find(|e| e.name == "one").unwrap().id.clone();
+        browser.execute(2, Command::Open(one)).unwrap();
+        settle_all(&mut browser);
+        browser.execute(3, Command::BrowsePath(fixture.path().join("two"))).unwrap();
+        settle_all(&mut browser);
+        browser.execute(4, Command::Back).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.view.location.as_ref().unwrap().path.as_path(), std::path::Path::new("one"));
+        browser.execute(5, Command::Forward).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.view.location.as_ref().unwrap().path.as_path(), std::path::Path::new("two"));
+        browser.execute(6, Command::Back).unwrap();
+        settle_all(&mut browser);
+        browser.execute(7, Command::Search("needle".into())).unwrap();
+        settle_all(&mut browser);
+        assert!(!browser.can_forward());
+        assert!(browser.view.search);
+        browser.execute(8, Command::Back).unwrap();
+        settle_all(&mut browser);
+        assert!(!browser.view.search);
+        browser.execute(9, Command::Forward).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.search_query(), Some("needle"));
+        assert!(browser.view.search);
+        let back_count = browser.back.len();
+        browser.execute(10, Command::Refresh).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.back.len(), back_count);
+        let before = browser.current_navigation();
+        assert!(
+            browser
+                .execute(11, Command::Navigate(Location { source: SourceId(999), path: RelativePath::default() }))
+                .is_err()
+        );
+        assert!(browser.current_navigation() == before);
+        assert_eq!(browser.back.len(), back_count);
+    }
+    #[test]
+    fn collection_history_keeps_all_contributors_across_sources_and_branches() {
+        let root = tempfile::tempdir().unwrap();
+        for id in 1..=4 {
+            std::fs::create_dir_all(root.path().join(format!("disk{id}/movies/Title/Extras"))).unwrap();
+            std::fs::write(root.path().join(format!("disk{id}/movies/Title/movie.mkv")), b"safe").unwrap();
+        }
+        let mut browser = browser();
+        browser.configure(fixture_library(root.path()), root.path().join("config.json")).unwrap();
+        browser.execute(1, Command::BrowseCollection(1)).unwrap();
+        settle_all(&mut browser);
+        let title = browser.view.entries[0].id.clone();
+        browser.execute(2, Command::Open(title)).unwrap();
+        settle_all(&mut browser);
+        browser.execute(3, Command::Navigate(Location { source: SourceId(1), path: RelativePath::default() })).unwrap();
+        settle_all(&mut browser);
+        browser.execute(4, Command::Back).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.view.collection, Some(1));
+        assert_eq!(browser.locations.len(), 4);
+        browser.execute(5, Command::Back).unwrap();
+        settle_all(&mut browser);
+        assert!(!browser.can_back());
+        assert!(browser.can_forward());
+        assert_eq!(browser.view.entries.len(), 1);
+        let title = browser.view.entries[0].id.clone();
+        assert_eq!(browser.contributors(&title).unwrap().len(), 4);
+        browser.execute(6, Command::Forward).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.locations.len(), 4);
+        assert_eq!(browser.view.entries.len(), 5);
+        browser.execute(7, Command::BrowseCollection(1)).unwrap();
+        settle_all(&mut browser);
+        assert!(!browser.can_forward());
+        browser.execute(8, Command::Back).unwrap();
+        settle_all(&mut browser);
+        assert_eq!(browser.locations.len(), 4);
+        assert_eq!(browser.view.entries.len(), 5);
+    }
+    #[test]
+    fn navigation_history_is_bounded_and_layout_replay_steps_only_once() {
+        let fixture = tempfile::tempdir().unwrap();
+        for name in ["one", "two"] {
+            std::fs::create_dir(fixture.path().join(name)).unwrap();
+        }
+        let mut browser = browser();
+        let mut commands = FrameCommands::default();
+        commands.dispatch(1, Command::AddSource(fixture.path().to_owned()), &mut browser).unwrap();
+        settle_all(&mut browser);
+        for (frame, name) in [(2, "one"), (3, "two")] {
+            commands.dispatch(frame, Command::BrowsePath(fixture.path().join(name)), &mut browser).unwrap();
+            settle_all(&mut browser);
+        }
+        for _ in 0..3 {
+            commands.dispatch(4, Command::Back, &mut browser).unwrap();
+        }
+        settle_all(&mut browser);
+        assert_eq!(browser.view.location.as_ref().unwrap().path.as_path(), std::path::Path::new("one"));
+        for frame in 5..150 {
+            let name = if frame % 2 == 0 { "one" } else { "two" };
+            commands.dispatch(frame, Command::BrowsePath(fixture.path().join(name)), &mut browser).unwrap();
+            settle_all(&mut browser);
+        }
+        assert_eq!(browser.back.len(), NAVIGATION_LIMIT);
+        assert!(!browser.can_forward());
+        for frame in 150..278 {
+            commands.dispatch(frame, Command::Back, &mut browser).unwrap();
+            settle_all(&mut browser);
+        }
+        assert!(!browser.can_back());
+        assert_eq!(browser.forward.len(), NAVIGATION_LIMIT);
     }
 }
