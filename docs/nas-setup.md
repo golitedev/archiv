@@ -59,7 +59,8 @@ No recursive scan runs merely because a collection exists.
 ## Settings and headless use
 
 Saved definitions live in `$XDG_CONFIG_HOME/archiv/library.json`, falling back to
-`~/.config/archiv/library.json`. `--library /absolute/file.json` selects another file. Version 1
+`~/.config/archiv/library.json`. UI preferences and window/layout state live beside it in `app.ron`.
+`--library /absolute/file.json` selects another library file; UI state keeps its configured location. Version 1
 supports at most 32 physical sources and 16 collections, each with 1–32 explicit member folders.
 The JSON file is limited to 256 KiB, rejects unknown fields, and contains no credentials or inventory.
 Use the UI to edit it. Source and collection IDs persist across restarts and ordinary edits.

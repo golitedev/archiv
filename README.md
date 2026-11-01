@@ -35,7 +35,9 @@ View → Cancel operation requests cancellation; completed changes may remain.
 
 Library version-1 JSON uses `sources`, `collections`, `openers` and `writes`. It is saved at
 `$XDG_CONFIG_HOME/archiv/library.json` or `~/.config/archiv/library.json`; `--library FILE` chooses
-another path. Open folder adds a temporary source; save one in Preferences before enabling writes.
+another path for the library file. Theme, UI preferences and window/layout state are stored in
+`$XDG_CONFIG_HOME/archiv/app.ron` (normally `~/.config/archiv/app.ron`). All default application
+settings live together in `~/.config/archiv/`. Open folder adds a temporary source; save one in Preferences before enabling writes.
 [Example](examples/archiv.example.json), [NAS setup](docs/nas-setup.md), [file actions](docs/file-actions.md).
 
 ## Limits and checks

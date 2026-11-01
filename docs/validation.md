@@ -57,3 +57,12 @@ in horizontal/vertical layouts at 100%, 125% and 200% scale and ordinary/taller 
 Removing vertical centering makes it fail (text center y=14 versus field center y=15 at 100%).
 Native X11 Light/Dark checks inspect typed synthetic text and caret placement in the folder
 dialog and bottom location field. Input/navigation interaction tests remain passing.
+
+## Consolidated settings directory (2026-11-01)
+
+The native executable explicitly places eframe's `app.ron` beside the default `library.json`
+in `$XDG_CONFIG_HOME/archiv` (normally `~/.config/archiv`). `--library FILE` still overrides only
+library storage. A native X11 launch with isolated config/data directories followed by File →
+Quit wrote presentation/window state in the config directory; no `archiv/app.ron` appeared in
+XDG_DATA_HOME. No migration or compatibility reader is present. Workspace fmt/check/Clippy and
+all 47 tests passed; the native executable was rebuilt for this persistence check.

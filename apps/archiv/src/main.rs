@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let library_path = match library_path {
         Some(path) => path,
-        None => default_library_path()?,
+        None => default_config_dir()?.join("library.json"),
     };
     let library = archiv_platform::library::load(&library_path).map_err(|e| {
         format!(
@@ -92,6 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
+        persistence_path: Some(default_config_dir()?.join("app.ron")),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_app_id("archiv")
             .with_inner_size([1180.0, 760.0])
@@ -189,14 +190,14 @@ fn headless(
     Ok(())
 }
 
-fn default_library_path() -> Result<PathBuf, Box<dyn Error>> {
+fn default_config_dir() -> Result<PathBuf, Box<dyn Error>> {
     let base = if let Some(path) = std::env::var_os("XDG_CONFIG_HOME").filter(|p| !p.is_empty()) {
         PathBuf::from(path)
     } else {
-        PathBuf::from(std::env::var_os("HOME").ok_or("HOME is unavailable; specify --library PATH")?).join(".config")
+        PathBuf::from(std::env::var_os("HOME").ok_or("HOME is unavailable; set XDG_CONFIG_HOME")?).join(".config")
     };
     if !base.is_absolute() {
-        return Err("Configuration directory must be absolute; specify --library PATH".into());
+        return Err("Configuration directory must be absolute".into());
     }
-    Ok(base.join("archiv/library.json"))
+    Ok(base.join("archiv"))
 }

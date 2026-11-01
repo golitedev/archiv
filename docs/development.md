@@ -23,9 +23,10 @@ cargo test --workspace --locked -j 2
 partial/limited results, and 30 seconds without worker progress. Normal filenames are escaped for
 one-line output; output is human-readable, not a byte-preserving machine protocol.
 
-GUI preferences/window state use eframe's Linux configuration location under the `archiv` app ID.
-Theme, reduced-motion preference and framework window state use eframe persistence. Explicit library
-definitions use the separate atomic JSON store described in nas-setup.md. Temporary Open folder
+GUI preferences/window state use eframe persistence with an explicit `app.ron` path in Archiv's
+configuration directory (`$XDG_CONFIG_HOME/archiv`, normally `~/.config/archiv`). Library definitions
+use `library.json` in that same directory, through the atomic JSON store described in nas-setup.md.
+`--library FILE` overrides only the library file; UI state stays in the configuration directory. Temporary Open folder
 sources, queries and media inventories are not persisted. Restoring definitions performs no scan.
 
 ## Crate workflow
