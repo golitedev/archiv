@@ -993,13 +993,12 @@ impl ArchivApp {
                 let expanded = branch.is_some_and(|b| b.expanded);
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::hover());
                 let mut response = ui.interact(rect, ui.scope_id().with(("row", &id)), egui::Sense::click());
-                if selected || response.hovered() {
-                    ui.painter().rect_filled(
-                        rect.shrink2(egui::vec2(0.0, 1.0)),
-                        6,
-                        if selected { t.selected } else { t.hover },
-                    );
-                }
+                // Reserve the background below child controls, then resolve its hover as one row.
+                let background = ui.painter().add(egui::Shape::Noop);
+                // The shared bottom edge belongs to the next row, not both rows.
+                let row_hovered = response.container_hovered()
+                    && ui.input(|input| input.pointer.interact_pos().is_some_and(|pos| pos.y < rect.bottom()));
+                let mut disclosure_hovered = false;
                 let row_clicked = response.clicked();
                 let name_rect = egui::Rect::from_min_size(rect.min, egui::vec2(name_width, 26.0));
                 let mut child = ui.new_child(
@@ -1023,6 +1022,7 @@ impl ArchivApp {
                             if expanded { "Collapse" } else { "Expand" },
                             display_name(&entry.name)
                         ));
+                    disclosure_hovered = arrow.container_hovered();
                     if arrow.clicked() {
                         *command = Some(Command::Expand(id.clone()));
                     }
@@ -1109,6 +1109,16 @@ impl ArchivApp {
                     ));
                 } else if let Some(source) = self.browser.source(id.source) {
                     location_response.on_hover_text(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                }
+                if selected || (row_hovered && !disclosure_hovered) {
+                    ui.painter().set(
+                        background,
+                        egui::Shape::rect_filled(
+                            rect.shrink2(egui::vec2(0.0, 1.0)),
+                            6,
+                            if selected { t.selected } else { t.hover },
+                        ),
+                    );
                 }
                 if row_clicked {
                     self.selected = Some(id.clone());

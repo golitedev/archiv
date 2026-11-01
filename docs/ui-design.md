@@ -219,3 +219,8 @@ explain the absence of a previous/next location. There is no separate Up action.
 history is session-only and bounded to 128 remembered locations; changing direction preserves
 physical sources, collection contributors and recursive search queries. New navigation after
 Back discards the forward branch. Modal dialogs suppress navigation shortcuts and side buttons.
+
+File-row hover is continuous over names, icons, spacing and metadata, independent of child
+widget hit ownership. Exactly one row owns each vertical boundary. The folder disclosure
+control intentionally suppresses grey row hover within its hit target; persistent blue selection
+stays visible. Popups/modal layers and active drags prevent underlying row hover.

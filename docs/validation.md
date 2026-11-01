@@ -5,7 +5,7 @@ Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, nev
 ## Automated checks
 
 Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
-with warnings denied, 51 passing tests and a native debug build. The tests cover byte-preserving identities,
+with warnings denied, 52 passing tests and a native debug build. The tests cover byte-preserving identities,
 merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
 policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
@@ -79,3 +79,14 @@ recursive search restoration, branch replacement, refresh exclusion, rejected na
 keyboard and mouse side buttons and checks that a modal blocks side-button navigation. Native
 X11 checks inspect Light/Dark toolbar placement and exercise folder/back/forward navigation with
 synthetic files. Physical hardware/Wayland mouse acceptance remains outside this environment.
+
+## Stable file-row hover (2026-11-01)
+
+Rows use container hover for names/icons/metadata, so child controls do not steal their shared
+background. The disclosure button intentionally suppresses grey row hover while blue selection
+persists. A half-open bottom edge gives exact row boundaries one owner. A rendering regression
+failed on the original name hover, then caught duplicate highlights at y=135 between adjacent
+rows. It now covers every one-point vertical step through eight folder names, horizontal name/
+icon/column movement, chevron exclusion, pointer exit, modal coverage and persistent selection.
+Native Light/Dark synthetic checks exercise a slow vertical sweep and inspect name/chevron
+hover. No filesystem actions or NAS access are involved.

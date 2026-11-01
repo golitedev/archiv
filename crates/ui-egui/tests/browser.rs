@@ -646,3 +646,75 @@ fn navigation_buttons_keyboard_and_mouse_side_buttons_share_history() {
     settle(&mut h);
     assert_eq!(h.state().browser().view().location.as_ref().unwrap().path.as_path(), std::path::Path::new("child"));
 }
+
+#[test]
+fn row_hover_is_stable_over_names_columns_and_slow_vertical_movement() {
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fixture.path().join("Series")).unwrap();
+    for index in 0..8 {
+        std::fs::create_dir(fixture.path().join(format!("Folder {index:02}"))).unwrap();
+    }
+    std::fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
+    let mut h = harness().unwrap();
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    let hover = h.ctx.style_of(egui::Theme::Light).visuals.widgets.hovered.bg_fill;
+    fn has_row_fill(h: &Harness<'_, ArchivApp>, y: f32, color: egui::Color32) -> bool {
+        h.output().shapes.iter().any(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) => {
+                rect.fill == color
+                    && rect.rect.width() > 300.0
+                    && (rect.rect.height() - 24.0).abs() < 1.0
+                    && (rect.rect.center().y - y).abs() < 1.0
+            }
+            _ => false,
+        })
+    }
+    for label in ["Series", "notes.txt"] {
+        let name = h.get_by_label(label).rect();
+        let y = name.center().y;
+        let left = h.get_by_label("NAME").rect().left() - 4.0;
+        let mut points = vec![egui::pos2(left + 32.0, y), name.center()];
+        for column in ["KIND", "SIZE", "LOCATION"] {
+            points.push(egui::pos2(h.get_by_label(column).rect().center().x, y));
+        }
+        points.push(egui::pos2(h.get_by_label("KIND").rect().left() - 18.0, y));
+        for point in points {
+            h.hover_at(point);
+            h.run_steps(3);
+            assert!(has_row_fill(&h, y, hover), "Missing full-row highlight for {label} at {point:?}");
+        }
+        if label == "Series" {
+            h.hover_at(h.get_by_label("Expand Series").rect().center());
+            h.run_steps(3);
+            assert!(!has_row_fill(&h, y, hover), "Chevron owns its own hover region");
+        }
+        h.hover_at(egui::pos2(4.0, 500.0));
+        h.run_steps(3);
+        assert!(!has_row_fill(&h, y, hover));
+    }
+    let centers: Vec<_> = (0..8).map(|index| h.get_by_label(&format!("Folder {index:02}")).rect().center()).collect();
+    let start = centers.first().unwrap();
+    let end = centers.last().unwrap();
+    for y in (start.y as i32)..=(end.y as i32) {
+        h.hover_at(egui::pos2(start.x, y as f32));
+        h.run_steps(1);
+        let expected = (((y as f32) - (start.y - 13.0)) / 26.0).floor() as usize;
+        for (index, center) in centers.iter().enumerate() {
+            assert_eq!(has_row_fill(&h, center.y, hover), index == expected, "Slow hover y={y}, folder {index}");
+        }
+    }
+    let name = h.get_by_label("Series").rect();
+    h.hover_at(name.center());
+    h.run_steps(3);
+    h.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::O);
+    h.run_steps(3);
+    assert!(!has_row_fill(&h, name.center().y, hover), "A modal must cover underlying row hover");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    h.get_by_label("Series").click();
+    h.run_steps(3);
+    h.hover_at(egui::pos2(4.0, 500.0));
+    h.run_steps(3);
+    assert!(has_row_fill(&h, name.center().y, h.ctx.style_of(egui::Theme::Light).visuals.selection.bg_fill));
+}
