@@ -718,3 +718,57 @@ fn row_hover_is_stable_over_names_columns_and_slow_vertical_movement() {
     h.run_steps(3);
     assert!(has_row_fill(&h, name.center().y, h.ctx.style_of(egui::Theme::Light).visuals.selection.bg_fill));
 }
+
+#[test]
+fn row_highlights_and_columns_leave_the_scrollbar_lane_clear() {
+    let fixture = tempfile::tempdir().unwrap();
+    for index in 0..100 {
+        std::fs::write(fixture.path().join(format!("item-{index:03}.txt")), b"safe").unwrap();
+    }
+    let mut h = harness().unwrap();
+    h.state_mut().open_source(0, fixture.path().to_owned());
+    settle(&mut h);
+    h.get_by_label("item-000.txt").click();
+    h.run_steps(3);
+    h.hover_at(h.get_by_label("item-001.txt").rect().center());
+    h.run_steps(3);
+    let scrollbar = h.get_by_role(egui::Role::ScrollBar).rect();
+    let style = h.ctx.style_of(egui::Theme::Light);
+    let selected = style.visuals.selection.bg_fill;
+    let hover = style.visuals.widgets.hovered.bg_fill;
+    let right = h.get_by_label("LOCATION").rect().right() + 4.0;
+    let fills: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect)
+                if (rect.fill == selected || rect.fill == hover)
+                    && rect.rect.width() > 300.0
+                    && (rect.rect.height() - 24.0).abs() < 1.0 =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills.len(), 2, "Both selection and hover must be painted");
+    for rect in fills {
+        assert!(
+            rect.right() + style.spacing.scroll.bar_inner_margin <= scrollbar.left() + 0.5,
+            "Row {rect:?} overlaps scrollbar lane {scrollbar:?}"
+        );
+        assert!((rect.right() - right).abs() < 0.5, "Header/row geometry must agree");
+    }
+    h.hover_at(egui::pos2(scrollbar.center().x, h.get_by_label("item-001.txt").rect().center().y));
+    h.run_steps(3);
+    assert!(!h.output().shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Rect(rect) if rect.fill==hover && rect.rect.width()>300.0 && (rect.rect.height()-24.0).abs()<1.0)),"Hovering the scrollbar must not hover a file");
+    h.get_by_label("Filter this folder").click();
+    h.run_steps(2);
+    h.get_by_label("Filter this folder").type_text("item-00");
+    h.run_steps(5);
+    assert!(
+        (h.get_by_label("LOCATION").rect().right() + 4.0 - right).abs() < 0.5,
+        "Filtering away overflow must not move the columns"
+    );
+}

@@ -5,7 +5,7 @@ Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, nev
 ## Automated checks
 
 Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
-with warnings denied, 52 passing tests and a native debug build. The tests cover byte-preserving identities,
+with warnings denied, 53 passing tests and a native debug build. The tests cover byte-preserving identities,
 merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
 policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
@@ -90,3 +90,12 @@ rows. It now covers every one-point vertical step through eight folder names, ho
 icon/column movement, chevron exclusion, pointer exit, modal coverage and persistent selection.
 Native Light/Dark synthetic checks exercise a slow vertical sweep and inspect name/chevron
 hover. No filesystem actions or NAS access are involved.
+
+## Scrollbar lane (2026-11-01)
+
+Header and file-row widths reserve the themed scrollbar's full width plus margins, while the
+scroll area retains its existing floating behavior. A 100-file regression failed before the
+fix: the row extended to x=937 while the scrollbar occupied x=929–937. It now verifies separate
+selection/hover fills, a clear inner margin, matching header geometry, no file hover under the
+scrollbar and stable columns after filtering away overflow. Native Light/Dark checks use an
+overflowing synthetic folder list and inspect selection/hover beside the expanded scrollbar.

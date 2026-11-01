@@ -967,7 +967,11 @@ impl ArchivApp {
                 ui.close();
             }
         });
-        let width = ui.available_width();
+        // Floating scrollbars can expand over their full hit target. Keep that lane
+        // outside both header/row geometry even while the scrollbar is collapsed/hidden.
+        let scroll = ui.spacing().scroll;
+        let scrollbar_lane = scroll.bar_inner_margin + scroll.bar_width + scroll.bar_outer_margin;
+        let width = (ui.available_width() - scrollbar_lane).max(0.0);
         let [name_width, kind_width, size_width, location_width] =
             self.columns.header(ui, width, self.browser.view().search, t);
         let kind_offset = name_width;

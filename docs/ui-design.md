@@ -224,3 +224,7 @@ File-row hover is continuous over names, icons, spacing and metadata, independen
 widget hit ownership. Exactly one row owns each vertical boundary. The folder disclosure
 control intentionally suppresses grey row hover within its hit target; persistent blue selection
 stays visible. Popups/modal layers and active drags prevent underlying row hover.
+
+File rows and headers reserve a stable lane for the scrollbar's full expanded width and margins.
+Hover/selection fills and file hit targets end before that lane; floating scrollbar animation or
+filtering away overflow must not shift the columns or cover a highlighted row.
