@@ -558,11 +558,7 @@ impl ArchivApp {
                 ui.heading("Open a folder");
                 ui.label("Absolute local path, including folders mounted from a NAS.");
                 let input = ui
-                    .add(
-                        egui::TextEdit::singleline(&mut self.source_input)
-                            .desired_width(f32::INFINITY)
-                            .char_limit(16384),
-                    )
+                    .add(widgets::text_field(&mut self.source_input).desired_width(f32::INFINITY).char_limit(16384))
                     .accessible_name("Folder path");
                 if self.focus_source {
                     input.request_focus();
@@ -692,7 +688,7 @@ impl ArchivApp {
                 if let Some(source) = self.browser.source(id.source) {
                     ui.label(display_name(source.root.join(id.path.as_path()).as_os_str()));
                 }
-                let field = ui.add(egui::TextEdit::singleline(name).char_limit(255)).accessible_name("New name");
+                let field = ui.add(widgets::text_field(name).char_limit(255)).accessible_name("New name");
                 if self.focus_rename {
                     field.request_focus();
                     self.focus_rename = false;
@@ -840,7 +836,7 @@ impl ArchivApp {
         if self.edit_location {
             let address = ui
                 .add(
-                    egui::TextEdit::singleline(&mut self.location_input)
+                    widgets::text_field(&mut self.location_input)
                         .char_limit(16384)
                         .desired_width(ui.available_width())
                         .hint_text("/absolute/folder"),
@@ -902,7 +898,7 @@ impl ArchivApp {
                         widget.corner_radius = egui::CornerRadius::same(16);
                     }
                     ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
+                        widgets::text_field(&mut self.query)
                             .id(egui::Id::unique("filename-filter"))
                             .hint_text("Search…  Enter for subfolders")
                             .desired_width((ui.available_width() - 24.0).clamp(70.0, 240.0))

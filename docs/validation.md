@@ -5,7 +5,7 @@ Updated: 2026-10-31. Fixtures and native captures use synthetic local trees, nev
 ## Automated checks
 
 Workspace checks use locked dependencies and parallelism of two: fmt, all-target check, Clippy
-with warnings denied, 46 passing tests and a native debug build. The tests cover byte-preserving identities,
+with warnings denied, 47 passing tests and a native debug build. The tests cover byte-preserving identities,
 merge collisions, settings validation, unavailable sources, worker cancellation/stale results,
 policy restrictions, mount refusal, permanent deletion previews/confirmation, rename and copy.
 
@@ -47,3 +47,13 @@ the divider. The sidebar now fills its requested width and truncates navigation 
 full names/physical paths available on hover. The test checks small incremental expansion,
 contraction and released geometry; the existing Details drag regression remains in the suite.
 Native Light/Dark checks use the same synthetic long labels and actual splitter drags.
+
+## Single-line field alignment (2026-11-01)
+
+Single-line folder, location, Rename, Preferences and search inputs share a centered field
+builder with the documented minimum height and symmetric padding. Multiline fields retain
+top alignment. A geometry regression measures actual laid-out text against its field center
+in horizontal/vertical layouts at 100%, 125% and 200% scale and ordinary/taller field heights.
+Removing vertical centering makes it fail (text center y=14 versus field center y=15 at 100%).
+Native X11 Light/Dark checks inspect typed synthetic text and caret placement in the folder
+dialog and bottom location field. Input/navigation interaction tests remain passing.

@@ -67,7 +67,8 @@ Do not make selection, warning, permission or availability distinguishable by co
   Respect system/user text scaling, HiDPI and font fallback; do not impose a minimum physical pixel size.
 - Item spacing: horizontal 8, vertical 6. Button padding: horizontal 10, vertical 5.
 - General control radius: 6. Windows/modals: 10. Menus: 8 with 6-point margins.
-- Fields: minimum height 30, horizontal inset 10, vertical inset 6. Dialog controls use visible
+- Fields: minimum height 30, horizontal inset 10, vertical inset 6. Single-line text and caret
+  are vertically centered even when the parent gives the field extra height; multiline text stays top-aligned. Dialog controls use visible
   outlines and 4-point control corners. Dialog content padding: horizontal 20, vertical 16.
 - Borders: normally 1 logical point; use a clearly visible 1.5-point accent for dialog focus.
   A field needs an identifiable boundary, not just a low-contrast background fill.

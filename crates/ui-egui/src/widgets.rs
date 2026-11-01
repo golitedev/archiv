@@ -2,6 +2,13 @@
 use crate::theme::Tokens;
 use archiv_core::{Entry, EntryKind};
 use egui::{Color32, Response, RichText};
+/// Shared single-line fields keep their text/caret centered when the layout adds height.
+pub fn text_field(value: &mut String) -> egui::TextEdit<'_> {
+    egui::TextEdit::singleline(value)
+        .align(egui::Align2::LEFT_CENTER)
+        .min_size(egui::vec2(0.0, 30.0))
+        .margin(egui::Margin::symmetric(10, 6))
+}
 pub fn pill(ui: &mut egui::Ui, text: &str, primary: bool, t: &Tokens) -> Response {
     let background = ui.painter().add(egui::Shape::Noop);
     let button = egui::Button::new(RichText::new(text).color(if primary { Color32::WHITE } else { t.text }))
@@ -123,4 +130,35 @@ pub fn cell(
         color,
     );
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn single_line_text_stays_centered_in_vertical_and_horizontal_layouts() {
+        for scale in [1.0, 1.25, 2.0] {
+            let ctx = egui::Context::default();
+            crate::fonts::install(&ctx);
+            ctx.set_pixels_per_point(scale);
+            for horizontal in [false, true] {
+                for height in [30.0, 42.0] {
+                    let mut value = "Synthetic path gyp".to_owned();
+                    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                        crate::theme::apply(ui.ctx(), crate::ThemePreference::Dark, true);
+                        let layout = if horizontal { egui::Layout::left_to_right(egui::Align::Center) }
+                            else { egui::Layout::top_down(egui::Align::Min) };
+                        ui.with_layout(layout, |ui| {
+                            let output = text_field(&mut value).min_size(egui::vec2(0.0, height)).show(ui);
+                            let text_center = output.galley_pos.y + output.galley.size().y * 0.5;
+                            let field_center = output.response.rect.center().y;
+                            assert!((text_center - field_center).abs() <= 0.6 / scale,
+                                "scale {scale}, horizontal {horizontal}, height {height}: text {text_center}, field {field_center}");
+                        });
+                    });
+                    output.textures_delta.clear();
+                }
+            }
+        }
+    }
 }

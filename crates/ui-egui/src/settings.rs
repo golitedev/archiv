@@ -222,14 +222,9 @@ fn field(ui: &mut egui::Ui, label: &str, value: &mut String, limit: usize) -> bo
         for widget in [&mut visuals.widgets.inactive, &mut visuals.widgets.hovered, &mut visuals.widgets.active] {
             widget.corner_radius = egui::CornerRadius::same(4);
         }
-        ui.add(
-            egui::TextEdit::singleline(value)
-                .char_limit(limit)
-                .desired_width(f32::INFINITY)
-                .margin(egui::Margin::symmetric(10, 7)),
-        )
-        .accessible_name(label)
-        .changed()
+        ui.add(widgets::text_field(value).char_limit(limit).desired_width(f32::INFINITY))
+            .accessible_name(label)
+            .changed()
     })
     .inner
 }
