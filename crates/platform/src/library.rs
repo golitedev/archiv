@@ -56,6 +56,17 @@ mod tests {
         assert!(config.openers.program(std::path::Path::new("file.txt")).is_none());
     }
     #[test]
+    fn sftp_example_round_trips_without_credentials_or_write_permissions() {
+        let settings: LibrarySettings =
+            serde_json::from_str(include_str!("../../../examples/archiv.sftp.example.json")).unwrap();
+        settings.validate().unwrap();
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("library.json");
+        save(&path, &settings).unwrap();
+        assert_eq!(load(&path).unwrap(), settings);
+        assert!(settings.writes.is_empty());
+    }
+    #[test]
     fn round_trip_is_private_and_invalid_save_preserves_previous_file() {
         let fixture = tempfile::tempdir().unwrap();
         let path = fixture.path().join("settings/library.json");

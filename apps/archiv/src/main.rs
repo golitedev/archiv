@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-const HELP: &str = "Archiv — native file manager\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH [--search QUERY]\n  archiv --list-collection ID [--library FILE] [--search QUERY]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nPreferences configures sources, collections, applications and file-change safeguards. Permanent delete, rename and pasted copies are disabled until configured. Delete requires confirmation. Linux mounts NFS separately.";
+const HELP: &str = "Archiv — native file manager\n\nUsage:\n  archiv [--browse PATH] [--theme system|light|dark]\n  archiv --list PATH [--search QUERY]\n  archiv --list-source ID [--library FILE] [--search QUERY]\n  archiv --list-collection ID [--library FILE] [--search QUERY]\n  archiv [--library FILE]\n\nNo folder is scanned without an explicit path. Paths refer to this PC.\nPreferences configures sources, collections, applications and file-change safeguards. Permanent delete, rename and pasted copies are disabled until configured. Delete requires confirmation. Linux mounts NFS separately. Direct SFTP sources support browsing only; configure them in Preferences.";
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = std::env::args_os().skip(1);
@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut theme = None;
     let mut library_path = None;
     let mut collection = None;
+    let mut source_id = None;
     let mut search = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -43,6 +44,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Some("--library") if library_path.is_none() => {
                 library_path = Some(absolute(args.next().ok_or("--library requires a settings file path")?)?);
+            }
+            Some("--list-source") if source_id.is_none() => {
+                source_id = Some(
+                    args.next()
+                        .and_then(|id| id.to_str().and_then(|id| id.parse::<u64>().ok()))
+                        .ok_or("--list-source requires a numeric source ID")?,
+                );
             }
             Some("--list-collection") if collection.is_none() => {
                 collection = Some(
@@ -72,6 +80,17 @@ fn main() -> Result<(), Box<dyn Error>> {
             library_path.display()
         )
     })?;
+    if let Some(id) = source_id {
+        if collection.is_some() || list.is_some() || browse.is_some() || theme.is_some() {
+            return Err("--list-source cannot be combined with another listing or GUI options".into());
+        }
+        return headless(
+            Command::Navigate(archiv_core::Location { source: archiv_core::SourceId(id), path: Default::default() }),
+            library,
+            library_path,
+            search,
+        );
+    }
     if collection.is_some() && list.is_some() {
         return Err("Choose --list or --list-collection".into());
     }
@@ -173,7 +192,7 @@ fn headless(
                     entry.kind.label(),
                     archiv_core_name(&entry.name),
                     source.label,
-                    archiv_core_name(source.root.join(id.path.as_path()).as_os_str())
+                    source.display_location(&id.path)
                 )?;
             }
         }

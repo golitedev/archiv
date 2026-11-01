@@ -23,5 +23,5 @@ or other NAS clients. Do not claim protection against arbitrary concurrent write
 Regression fixtures cover policy denials, protected ancestors, stale snapshots, source/parent
 changes, links, missing mounts, collisions, cancellation, literal/non-UTF-8 paths and replayed
 confirmation. Never run development deletion experiments on the real NAS library. Live writable
-NFS/disconnect and power-loss acceptance remains incomplete. Transfers over SSH and permission
+NFS/disconnect and power-loss acceptance remains incomplete. Read-only SFTP browsing is documented in [sftp.md](sftp.md). Transfers over SSH and permission
 editing are future work and must use this same engine/policy boundary.

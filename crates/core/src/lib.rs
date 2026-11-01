@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod library;
+pub mod sftp;
 
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
@@ -77,13 +78,28 @@ impl RelativePath {
 pub struct Source {
     /// Stable source identity within the session.
     pub id: SourceId,
-    /// Exact absolute root path, supplied by the user.
+    /// Absolute root path, local or remote according to the connection settings.
     pub root: PathBuf,
     /// Display label, never used for filesystem operations.
     pub label: String,
     /// Expected NFS server:/export; root must be its exact mount point.
     #[serde(default)]
     pub nfs_remote: Option<String>,
+    /// Direct read-only SFTP connection; root is a remote absolute path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sftp: Option<sftp::SftpConnection>,
+}
+
+impl Source {
+    /// Readable location label; never use this lossy display value for operations.
+    pub fn display_location(&self, path: &RelativePath) -> String {
+        let physical =
+            if path.as_path().as_os_str().is_empty() { self.root.clone() } else { self.root.join(path.as_path()) };
+        match &self.sftp {
+            Some(connection) => format!("sftp://{}{}", connection.authority(), display_name(physical.as_os_str())),
+            None => display_name(physical.as_os_str()),
+        }
+    }
 }
 
 /// A directory within one registered physical source.

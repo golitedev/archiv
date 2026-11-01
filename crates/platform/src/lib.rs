@@ -3,6 +3,7 @@
 pub mod library;
 mod mount;
 pub mod operations;
+mod sftp;
 
 use archiv_core::{Entry, EntryId, EntryKind, RelativePath, Source};
 use std::fmt;
@@ -68,7 +69,7 @@ pub trait DirectoryReader: Send + Sync + 'static {
     ) -> Result<ReadSummary, ReadError>;
 }
 
-/// Linux local/mounted-directory adapter, using descriptor-relative no-symlink resolution.
+/// Source reader: anchored Linux local/mounted paths or direct read-only SFTP.
 #[derive(Default)]
 pub struct LocalDirectoryReader;
 
@@ -79,6 +80,15 @@ impl DirectoryReader for LocalDirectoryReader {
         cancelled: &AtomicBool,
         emit: &mut dyn FnMut(Vec<Entry>) -> bool,
     ) -> Result<ReadSummary, ReadError> {
+        if request.source.sftp.is_some() {
+            let path = PathBuf::from(request.source.display_location(&request.path));
+            return sftp::read(request, cancelled, emit).map_err(|error| ReadError {
+                path,
+                error: io::Error::other(format!(
+                    "{error}. Check SSH host, key/agent, known_hosts and remote folder with sftp on this PC"
+                )),
+            });
+        }
         let mut summary = ReadSummary::default();
         if cancelled.load(Ordering::Acquire) {
             summary.cancelled = true;
@@ -186,9 +196,28 @@ mod tests {
     use archiv_core::SourceId;
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
 
+    #[test]
+    fn sftp_failure_never_falls_back_to_a_same_named_local_directory() {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::write(fixture.path().join("local-only"), b"safe").unwrap();
+        let mut req = request(fixture.path());
+        req.source.sftp =
+            Some(archiv_core::sftp::SftpConnection { host: "-invalid".into(), user: String::new(), port: None });
+        assert!(
+            LocalDirectoryReader
+                .read(&req, &AtomicBool::new(false), &mut |_| panic!("SFTP fell back to local files"))
+                .is_err()
+        );
+    }
     fn request(root: &std::path::Path) -> ReadRequest {
         ReadRequest {
-            source: Source { id: SourceId(1), root: root.to_owned(), label: "Fixture".into(), nfs_remote: None },
+            source: Source {
+                id: SourceId(1),
+                root: root.to_owned(),
+                label: "Fixture".into(),
+                nfs_remote: None,
+                sftp: None,
+            },
             path: RelativePath::default(),
         }
     }

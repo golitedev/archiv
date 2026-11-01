@@ -1,8 +1,12 @@
 # Roadmap
 
-Updated: 2026-10-31. This is a new application with one current configuration format.
+Updated: 2026-11-01. This is a new application with one current configuration format.
 
 ## Implemented
+
+- Direct read-only SFTP v3 browsing through system OpenSSH, saved endpoint settings, strict host-key
+  verification, bounded/cancellable directory jobs and no local-path fallback. Remote file actions
+  and application launching are unavailable. See docs/sftp.md for configuration and limits.
 
 - Rust/egui native Linux browsing, optional mounted-source collections, compact inline trees,
   explicit bounded recursive search, source identity and missing-NFS-mount refusal.
@@ -17,6 +21,9 @@ Updated: 2026-10-31. This is a new application with one current configuration fo
 - Atomic library settings and synthetic domain/platform/engine/native-egui interaction tests.
 
 ## Remaining acceptance
+
+- SFTP encrypted SSH authentication/disconnect acceptance on the graphical PC and real NAS;
+  synthetic protocol tests run against a local OpenSSH SFTP subsystem without a network listener.
 
 - Actual Debian NFS exports and graphical-PC mounts, writable NFS operations/disconnects and
   server durability. No real NAS mutation tests have been performed.

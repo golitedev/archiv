@@ -28,6 +28,9 @@ fn flags() -> OFlags {
     OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC | OFlags::NOFOLLOW
 }
 fn root(source: &Source) -> Result<File, String> {
+    if source.sftp.is_some() {
+        return Err("SFTP sources support browsing only".into());
+    }
     let root = File::from(
         unix::openat2(unix::CWD, &source.root, flags(), Mode::empty(), ResolveFlags::NO_SYMLINKS)
             .map_err(|e| e.to_string())?,
@@ -496,9 +499,31 @@ mod tests {
     use super::*;
     use archiv_core::{SourceId, actions::ProtectedPath};
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
+    #[test]
+    fn sftp_never_mutates_a_same_named_local_path_even_with_a_permissive_policy() {
+        let (fixture, mut source, policy) = setup();
+        fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
+        let entry = entry(&source, "notes.txt");
+        source.sftp =
+            Some(archiv_core::sftp::SftpConnection { host: "fixture".into(), user: String::new(), port: None });
+        assert!(rename(&source, &entry, std::ffi::OsStr::new("changed.txt"), &policy, &[]).is_err());
+        assert!(
+            prepare_delete(1, source.clone(), entry.clone(), policy.clone(), vec![], &AtomicBool::new(false)).is_err()
+        );
+        assert!(
+            copy(&source, &entry, &source, &RelativePath::default(), &policy, &[], &AtomicBool::new(false)).is_err()
+        );
+        assert_eq!(fs::read(fixture.path().join("notes.txt")).unwrap(), b"safe");
+    }
     fn setup() -> (tempfile::TempDir, Source, WritePolicy) {
         let dir = tempfile::tempdir().unwrap();
-        let source = Source { id: SourceId(1), root: dir.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+        let source = Source {
+            id: SourceId(1),
+            root: dir.path().to_owned(),
+            label: "Fixture".into(),
+            nfs_remote: None,
+            sftp: None,
+        };
         let policy = WritePolicy {
             source: source.id,
             enabled: true,

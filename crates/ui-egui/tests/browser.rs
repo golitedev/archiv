@@ -231,7 +231,7 @@ fn delete_confirmation_cancels_safely_then_permanently_deletes_only_the_selected
     let root = fixture.path().join("disk");
     std::fs::create_dir_all(root.join("media/Title")).unwrap();
     std::fs::write(root.join("media/Title/notes.txt"), b"safe").unwrap();
-    let source = Source { id: SourceId(1), root: root.clone(), label: "Fixture".into(), nfs_remote: None };
+    let source = Source { id: SourceId(1), root: root.clone(), label: "Fixture".into(), nfs_remote: None, sftp: None };
     let config = LibrarySettings {
         sources: vec![source],
         writes: vec![WritePolicy {
@@ -479,7 +479,13 @@ fn context_menus_copy_paste_and_rename_the_clicked_physical_item() {
     let fixture = tempfile::tempdir().unwrap();
     std::fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
     std::fs::create_dir(fixture.path().join("out")).unwrap();
-    let source = Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+    let source = Source {
+        id: SourceId(1),
+        root: fixture.path().to_owned(),
+        label: "Fixture".into(),
+        nfs_remote: None,
+        sftp: None,
+    };
     let config = LibrarySettings {
         sources: vec![source],
         writes: vec![WritePolicy {
@@ -550,6 +556,7 @@ fn sources_splitter_tracks_small_drags_with_long_navigation_labels() {
         root: fixture.path().to_owned(),
         label: "A long synthetic physical source name that must not force the sidebar width".into(),
         nfs_remote: None,
+        sftp: None,
     };
     let config = LibrarySettings {
         sources: vec![source],
@@ -771,4 +778,49 @@ fn row_highlights_and_columns_leave_the_scrollbar_lane_clear() {
         (h.get_by_label("LOCATION").rect().right() + 4.0 - right).abs() < 0.5,
         "Filtering away overflow must not move the columns"
     );
+}
+
+#[test]
+fn preferences_saves_sftp_without_connecting_and_shows_read_only_safeguards() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("library.json");
+    let mut browser = Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap();
+    browser.configure(Default::default(), path.clone()).unwrap();
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1180.0, 760.0))
+        .build_eframe(move |_cc| ArchivApp::new(browser, Preferences::default()));
+    preferences(&mut h);
+    h.run_steps(3);
+    h.get_by_label("Sources").click_accesskit();
+    h.run_steps(3);
+    h.get_by_label("Add source").click();
+    h.run_steps(3);
+    h.get_by_label("Direct SFTP (browse only)").click_accesskit();
+    h.run_steps(3);
+    h.get_by_label("Remote root folder").click();
+    h.run_steps(2);
+    h.get_by_label("Remote root folder").type_text("/synthetic/media");
+    h.run_steps(2);
+    h.get_by_label("SFTP host or SSH alias").scroll_to_me();
+    h.run_steps(3);
+    h.get_by_label("SFTP host or SSH alias").click();
+    h.run_steps(2);
+    h.get_by_label("SFTP host or SSH alias").type_text("synthetic-nas");
+    h.run_steps(2);
+    h.get_by_label("Save library").click();
+    h.run_steps(3);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while h.state().browser().settings_pending() && Instant::now() < deadline {
+        h.run_steps(2);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.run_steps(3);
+    let saved = archiv_platform::library::load(&path).unwrap();
+    assert_eq!(saved.sources[0].sftp.as_ref().unwrap().host, "synthetic-nas");
+    assert_eq!(saved.sources[0].root, std::path::Path::new("/synthetic/media"));
+    assert_eq!(h.state().browser().view().phase, Phase::Idle);
+    h.get_by_label("Safeguards").click_accesskit();
+    h.run_steps(3);
+    h.get_by_label("SFTP · browsing only. File changes are unavailable.");
+    assert!(h.query_by_label("Allow permanent delete, rename and pasted copies").is_none());
 }

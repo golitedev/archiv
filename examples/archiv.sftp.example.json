@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": 1,
+      "label": "Archive over SFTP",
+      "root": "/srv/media",
+      "sftp": {"host": "archive-nas", "user": "", "port": null}
+    }
+  ],
+  "collections": [],
+  "openers": {"images": "", "media": "", "text": "", "other": ""},
+  "writes": []
+}

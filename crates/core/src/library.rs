@@ -56,15 +56,25 @@ impl LibrarySettings {
             if source.id.0 == 0
                 || source.id.0 == u64::MAX
                 || !ids.insert(source.id)
-                || !roots.insert(&source.root)
+                || !roots.insert((&source.root, &source.sftp))
                 || !source.root.is_absolute()
                 || source.root.as_os_str().len() > 16384
+                || source.root.as_os_str().as_encoded_bytes().contains(&0)
                 || source.root.components().any(|c| matches!(c, std::path::Component::ParentDir))
                 || source.label.trim().is_empty()
                 || source.label.len() > 128
                 || source.label.chars().any(char::is_control)
             {
                 return Err("Sources need unique IDs/absolute roots and a name (up to 128 bytes)".into());
+            }
+            if let Some(connection) = &source.sftp {
+                connection.validate()?;
+                if source.nfs_remote.is_some() {
+                    return Err("A source cannot use both NFS and SFTP".into());
+                }
+                if source.root.components().count() > 64 {
+                    return Err("SFTP folder depth exceeds 64 components".into());
+                }
             }
             if let Some(remote) = &source.nfs_remote
                 && (remote.len() > 1024 || !remote.contains(":/") || remote.chars().any(char::is_whitespace))
@@ -77,6 +87,9 @@ impl LibrarySettings {
             return Err("Too many file-change policies".into());
         }
         for policy in &self.writes {
+            if policy.enabled && self.sources.iter().any(|s| s.id == policy.source && s.sftp.is_some()) {
+                return Err("SFTP sources support browsing only; file changes cannot be enabled".into());
+            }
             if !ids.contains(&policy.source)
                 || !policies.insert(policy.source)
                 || policy.allowed.len() > 128
@@ -170,6 +183,7 @@ mod tests {
             label: "Disk".into(),
             root: "/synthetic/disk".into(),
             nfs_remote: None,
+            sftp: None,
         });
         config.collections.push(Collection {
             id: 1,

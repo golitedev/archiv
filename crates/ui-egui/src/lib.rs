@@ -156,7 +156,7 @@ impl ArchivApp {
         let entry = self.browser.entry(id)?;
         match entry.kind {
             EntryKind::Directory => Some(Command::Open(id.clone())),
-            EntryKind::File => Some(Command::Launch(id.clone())),
+            EntryKind::File if self.browser.file_action_availability(id).is_ok() => Some(Command::Launch(id.clone())),
             _ => None,
         }
     }
@@ -434,7 +434,7 @@ impl ArchivApp {
                         ui.small("SOURCES");
                         ui.add_space(6.0);
                         if self.browser.sources().is_empty() {
-                            ui.weak("Add a local or mounted folder.");
+                            ui.weak("Add a local, mounted or SFTP source.");
                         }
                         for source in self.browser.sources() {
                             ui.push_id(source.id, |ui| {
@@ -447,7 +447,7 @@ impl ArchivApp {
                                         .on_hover_text(format!(
                                             "{}\n{}",
                                             source.label,
-                                            display_name(source.root.as_os_str())
+                                            source.display_location(&RelativePath::default())
                                         ))
                                         .clicked()
                                     {
@@ -493,10 +493,7 @@ impl ArchivApp {
                             for id in ids {
                                 if let Some(source) = self.browser.source(id.source) {
                                     ui.label(&source.label);
-                                    ui.label(
-                                        RichText::new(display_name(source.root.join(id.path.as_path()).as_os_str()))
-                                            .monospace(),
-                                    );
+                                    ui.label(RichText::new(source.display_location(&id.path)).monospace());
                                     if self.browser.view().collection.is_some()
                                         && !self.browser.view().search
                                         && entry.kind == EntryKind::Directory
@@ -516,12 +513,19 @@ impl ArchivApp {
                             ui.add_space(12.0);
                             let label = if entry.kind == EntryKind::Directory {
                                 "Open selected folder"
+                            } else if self.browser.source(entry.id.source).is_some_and(|s| s.sftp.is_some()) {
+                                "SFTP · browsing only"
                             } else {
                                 "Open with application"
                             };
                             if ui
                                 .add_enabled(self.open_command().is_some(), egui::Button::new(label))
-                                .on_disabled_hover_text("Links and special files are not opened")
+                                .on_disabled_hover_text(
+                                    self.browser
+                                        .file_action_availability(&entry.id)
+                                        .err()
+                                        .unwrap_or_else(|| "Links and special files are not opened".into()),
+                                )
                                 .clicked()
                             {
                                 command = self.open_command();
@@ -564,7 +568,7 @@ impl ArchivApp {
                 widgets::card(&t).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Start browsing").font(fonts::semibold(13.0)));
-                    ui.label("Choose a local folder or a mounted network source.");
+                    ui.label("Choose a local folder or configure a mounted or SFTP source.");
                     ui.add_space(10.0);
                     if widgets::pill(ui, "Open a folder…", true, &t).clicked() {
                         self.open_dialog();
@@ -718,7 +722,7 @@ impl ArchivApp {
                 ui.set_width((ctx.content_rect().width() - 64.0).clamp(240.0, 480.0));
                 ui.heading("Rename");
                 if let Some(source) = self.browser.source(id.source) {
-                    ui.label(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                    ui.label(source.display_location(&id.path));
                 }
                 let field = ui.add(widgets::text_field(name).char_limit(255)).accessible_name("New name");
                 if self.focus_rename {
@@ -818,7 +822,12 @@ impl ArchivApp {
     fn item_actions(&mut self, ui: &mut egui::Ui, id: &EntryId, command: &mut Option<Command>) {
         let physical = self.browser.physical(id);
         let kind = self.browser.entry(id).map(|e| e.kind);
-        if ui.button("Open").clicked() {
+        let open_allowed = kind == Some(EntryKind::Directory) || self.browser.file_action_availability(id).is_ok();
+        if ui
+            .add_enabled(open_allowed, egui::Button::new("Open"))
+            .on_disabled_hover_text("SFTP supports folder navigation only; external applications are unavailable")
+            .clicked()
+        {
             *command = Some(if kind == Some(EntryKind::Directory) {
                 Command::Open(id.clone())
             } else {
@@ -879,7 +888,20 @@ impl ArchivApp {
                 self.focus_location = false;
             }
             if (address.has_focus() || address.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                *command = Some(Command::BrowsePath(self.location_input.clone().into()));
+                *command = Some(
+                    match self
+                        .browser
+                        .view()
+                        .location
+                        .as_ref()
+                        .filter(|l| self.browser.source(l.source).is_some_and(|s| s.sftp.is_some()))
+                    {
+                        Some(location) => {
+                            Command::BrowseSourcePath(location.source, self.location_input.clone().into())
+                        }
+                        None => Command::BrowsePath(self.location_input.clone().into()),
+                    },
+                );
                 self.edit_location = false;
             }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
@@ -896,7 +918,7 @@ impl ArchivApp {
             } else if let Some(location) = &self.browser.view().location {
                 self.browser
                     .source(location.source)
-                    .map_or(String::new(), |source| display_name(source.root.join(location.path.as_path()).as_os_str()))
+                    .map_or(String::new(), |source| source.display_location(&location.path))
             } else {
                 "Enter a location…  Ctrl+L".into()
             };
@@ -1112,7 +1134,7 @@ impl ArchivApp {
                         summary.truncated, summary.skipped
                     ));
                 } else if let Some(source) = self.browser.source(id.source) {
-                    location_response.on_hover_text(display_name(source.root.join(id.path.as_path()).as_os_str()));
+                    location_response.on_hover_text(source.display_location(&id.path));
                 }
                 if selected || (row_hovered && !disclosure_hovered) {
                     ui.painter().set(

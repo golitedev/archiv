@@ -101,17 +101,31 @@ impl Editor {
                 appearance(ui,preferences,t);
             }else{ui.add_enabled_ui(!pending,|ui|match self.page{
                 Page::Sources=>{
-                    section(ui,"Physical sources");ui.label("Saved definitions never scan automatically at startup.");ui.small("For NFS, mount the share in Linux, then enter the local mount point and exact server:/export shown by findmnt. SSH aliases are separate.");
+                    section(ui,"Physical sources");ui.label("Saved definitions never scan automatically at startup.");ui.small("For NFS, mount the share in Linux, then enter the local mount point and exact server:/export shown by findmnt. SFTP sources connect directly using OpenSSH; no mount is needed.");
                     let mut remove=None;
                     for source in &mut self.draft.sources{ui.push_id(source.id,|ui|{
                         ui.add_space(10.0);ui.separator();field(ui,"Source name",&mut source.label,128);
-                        let mut root=source.root.to_string_lossy().into_owned();if field(ui,"Local mount / folder",&mut root,16384){source.root=PathBuf::from(root);}
+                        let mut root=source.root.to_string_lossy().into_owned();if field(ui,if source.sftp.is_some(){"Remote root folder"}else{"Local mount / folder"},&mut root,16384){source.root=PathBuf::from(root);}
+                        let mut remote_source=source.sftp.is_some();
+                        if ui.checkbox(&mut remote_source,"Direct SFTP (browse only)").changed(){
+                            source.sftp=remote_source.then(||archiv_core::sftp::SftpConnection{host:String::new(),user:String::new(),port:None});
+                            if remote_source{source.nfs_remote=None;self.draft.writes.retain(|p|p.source!=source.id);}
+                        }
+                        if let Some(connection)=&mut source.sftp{
+                            field(ui,"SFTP host or SSH alias",&mut connection.host,253);
+                            field(ui,"SFTP username (optional)",&mut connection.user,128);
+                            let mut port=connection.port.unwrap_or(0);
+                            ui.horizontal(|ui|{ui.label("SFTP port (0 uses SSH config)");if ui.add(egui::DragValue::new(&mut port).range(0..=65535)).changed(){connection.port=(port!=0).then_some(port);}});
+                            ui.small("Uses this PC's SSH config, keys/agent and trusted known_hosts. No passwords are stored. Files are listed only; opening apps and file changes are unavailable.");
+                        }
+                        if source.sftp.is_none(){
                         let mut nfs=source.nfs_remote.is_some();if ui.checkbox(&mut nfs,"Require expected NFS mount").changed(){source.nfs_remote=nfs.then(||"server:/export".into());}
                         if let Some(remote)=&mut source.nfs_remote{field(ui,"Expected NFS export",remote,1024);}
+                        }
                         if ui.button("Remove source").clicked(){remove=Some(source.id);}
                     });}
                     if let Some(id)=remove{self.allowed.remove(&id);self.protected.remove(&id);self.subtrees.remove(&id);self.draft.sources.retain(|s|s.id!=id);self.draft.writes.retain(|p|p.source!=id);for members in self.members.values_mut(){members.retain(|(source,_)|*source!=id);}for c in &mut self.draft.collections{c.members.retain(|m|m.source!=id);}}
-                    if self.draft.sources.len()<32&&ui.button("Add source").clicked(){let id=self.draft.sources.iter().map(|s|s.id.0).max().unwrap_or(0).saturating_add(1);self.draft.sources.push(Source{id:SourceId(id),label:format!("Source {id}"),root:PathBuf::new(),nfs_remote:None});}
+                    if self.draft.sources.len()<32&&ui.button("Add source").clicked(){let id=self.draft.sources.iter().map(|s|s.id.0).max().unwrap_or(0).saturating_add(1);self.draft.sources.push(Source{id:SourceId(id),label:format!("Source {id}"),root:PathBuf::new(),nfs_remote:None,sftp:None});}
                 }
                 Page::Collections=>{
                     section(ui,"Optional collections");ui.label("Combine selected folders visually. Nothing is merged or renamed on disk.");let mut remove=None;
@@ -146,7 +160,8 @@ impl Editor {
                 Page::Safeguards=>{
                     ui.horizontal(|ui|{ui.add(widgets::icon("shield",18.0,t.accent));section(ui,"File changes and protected folders");});ui.label("Delete, rename and pasted copies are disabled until explicitly allowed for a physical source.");ui.small("These safeguards apply to Archiv only. Other apps, SSH users and writable NFS clients have their own access. Source roots and collection roots are always protected. Delete is permanent and cannot be undone.");
                     for source in &self.draft.sources{ui.push_id(source.id,|ui|{
-                        ui.separator();ui.strong(&source.label);ui.label(source.root.to_string_lossy());
+                        ui.separator();ui.strong(&source.label);
+                        if source.sftp.is_some(){ui.label("SFTP · browsing only. File changes are unavailable.");return;}ui.label(source.root.to_string_lossy());
                         let mut enabled=self.draft.writes.iter().any(|p|p.source==source.id&&p.enabled);
                         if ui.checkbox(&mut enabled,"Allow permanent delete, rename and pasted copies").changed(){if let Some(policy)=self.draft.writes.iter_mut().find(|p|p.source==source.id){policy.enabled=enabled;}else{self.draft.writes.push(WritePolicy{source:source.id,enabled,allowed:Vec::new(),protected:Vec::new()});}}
                         ui.label("Allowed relative folders (one per line)");multiline(ui,"Allowed folders",self.allowed.entry(source.id).or_default());ui.small("Use . to allow the source subtree; the source root itself stays protected.");
@@ -382,6 +397,7 @@ mod tests {
                 label: "Archive".into(),
                 root: "/synthetic/archive".into(),
                 nfs_remote: None,
+                sftp: None,
             }],
             collections: vec![Collection {
                 id: 1,

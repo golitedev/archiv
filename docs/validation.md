@@ -99,3 +99,25 @@ fix: the row extended to x=937 while the scrollbar occupied x=929–937. It now 
 selection/hover fills, a clear inner margin, matching header geometry, no file hover under the
 scrollbar and stable columns after filtering away overflow. Native Light/Dark checks use an
 overflowing synthetic folder list and inspect selection/hover beside the expanded scrollbar.
+
+## Direct read-only SFTP (2026-11-01)
+
+Workspace fmt/check/Clippy (warnings denied) and all 66 tests pass with locked dependencies and
+`-j 2`; the native executable builds. Protocol integration tests launch the installed OpenSSH
+read-only SFTP server over inherited Unix sockets, without a network listener, credentials or
+NAS access. They cover actual directory listings, literal/non-UTF-8 filenames, metadata, nested
+folders, observed symlink refusal, batch bounds and cancellation. Additional fixtures check
+malformed/oversized frames, attribute bounds, deadlines, child reaping and strict OpenSSH flags.
+
+Headless engine fixtures cover remote source navigation, recursive search, history, address
+containment and refusal of external applications and all file actions. Settings tests verify
+remote namespace separation, invalid endpoints, NFS/SFTP exclusion, remote write-policy refusal,
+example persistence and saving through native egui without connecting. Local-fallback and
+local-mutation regressions both demonstrably fail when their respective platform routing/guard
+is removed, and pass with the implementation restored. Tests use temporary synthetic trees.
+
+Native X11/Xvfb Light/Dark inspection covers configured SFTP fields, readable connection help,
+read-only Safeguards and an offline source error with no fallback listing. Synthetic captures
+remain ignored under artifacts. This is protocol/subsystem and UI evidence, not end-to-end SSH
+server authentication acceptance. Real NAS authentication/disconnect, hardware/Wayland, complete
+accessibility and hostile concurrent remote path replacement remain unverified; see sftp.md.

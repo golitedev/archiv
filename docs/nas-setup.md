@@ -1,7 +1,7 @@
 # Mounted NAS sources and optional collections
 
-Archiv browses already-mounted NFS shares. It does not SSH into a NAS, install packages, change
-exports/permissions or request root privileges. SSH aliases and local mount paths are distinct:
+This guide covers already-mounted NFS shares. For direct SSH/SFTP browsing without mounts, see
+[SFTP setup](sftp.md). Archiv does not install packages, change exports/permissions or request root privileges. SSH aliases and local mount paths are distinct:
 `ssh nas` working does not mean that `nas` resolves as an NFS server name on the PC.
 
 ## Debian server and Arch PC

@@ -18,6 +18,8 @@ pub enum Command {
     AddSource(PathBuf),
     /// Navigate an absolute address, preserving an existing source identity when possible.
     BrowsePath(PathBuf),
+    /// Edit an absolute folder within one source, including a remote SFTP source.
+    BrowseSourcePath(SourceId, PathBuf),
     /// Browse a configured virtual collection at its root.
     BrowseCollection(u64),
     /// Revisit the previous physical/collection/search location.
@@ -505,6 +507,7 @@ impl Browser {
                 Ok(())
             }
             Command::Launch(id) => {
+                self.file_action_availability(&id).map_err(EngineError)?;
                 let entry =
                     self.entry(&id).cloned().ok_or_else(|| EngineError("Selected file is no longer visible".into()))?;
                 let source = self.source(id.source).cloned().ok_or_else(|| EngineError("Unknown source".into()))?;
@@ -618,6 +621,14 @@ impl Browser {
             Command::Back => self.travel(false),
             Command::Forward => self.travel(true),
             Command::AddSource(root) => self.add_source(root),
+            Command::BrowseSourcePath(id, path) => {
+                let source = self.source(id).ok_or_else(|| EngineError("Unknown source".into()))?;
+                let relative = path
+                    .strip_prefix(&source.root)
+                    .map_err(|_| EngineError("Folder must remain inside the configured source root".into()))?;
+                let relative = RelativePath::new(relative).map_err(|e| EngineError(e.to_string()))?;
+                self.navigate(Location { source: id, path: relative })
+            }
             Command::BrowsePath(path) => {
                 if !path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
                     return Err(EngineError("Use an absolute address without parent traversal".into()));
@@ -625,7 +636,7 @@ impl Browser {
                 if let Some(source) = self
                     .sources
                     .iter()
-                    .filter(|s| path.starts_with(&s.root))
+                    .filter(|s| s.sftp.is_none() && path.starts_with(&s.root))
                     .max_by_key(|s| s.root.components().count())
                 {
                     let relative = path.strip_prefix(&source.root).map_err(|e| EngineError(e.to_string()))?;
@@ -689,7 +700,8 @@ impl Browser {
         if !root.is_absolute() {
             return Err(EngineError("Choose an absolute folder path".into()));
         }
-        let existing = self.sources.iter().find(|source| source.root == root).map(|source| source.id);
+        let existing =
+            self.sources.iter().find(|source| source.sftp.is_none() && source.root == root).map(|source| source.id);
         let id = if let Some(id) = existing {
             id
         } else {
@@ -700,7 +712,7 @@ impl Browser {
             self.next_source =
                 self.next_source.checked_add(1).ok_or_else(|| EngineError("Source identity limit reached".into()))?;
             let label = display_name(root.file_name().unwrap_or(root.as_os_str()));
-            self.sources.push(Source { id, root, label, nfs_remote: None });
+            self.sources.push(Source { id, root, label, nfs_remote: None, sftp: None });
             id
         };
         self.navigate(Location { source: id, path: RelativePath::default() })
@@ -987,8 +999,17 @@ impl Browser {
         let path = location.path.child(&entry.name).map_err(|e| e.to_string())?;
         self.policy(location.source).map_err(|e| e.to_string())?.permits(&path, entry.kind)
     }
+    /// Shared remote-file action boundary for UI availability and engine admission.
+    pub fn file_action_availability(&self, id: &EntryId) -> Result<(), String> {
+        let source = self.source(id.source).ok_or("Unknown source")?;
+        if source.sftp.is_some() {
+            return Err("SFTP supports browsing and folder navigation only; file actions and external applications are unavailable".into());
+        }
+        Ok(())
+    }
     /// Physical identity check shared by menu actions and engine admission.
     pub fn physical(&self, id: &EntryId) -> Result<(Source, Entry), EngineError> {
+        self.file_action_availability(id).map_err(EngineError)?;
         let entry = self.entry(id).cloned().ok_or_else(|| EngineError("Item is no longer visible".into()))?;
         if self.contributors(id).is_some() || !matches!(entry.kind, EntryKind::File | EntryKind::Directory) {
             return Err(EngineError("Choose an explicit physical file or folder; merged folders, links and special files have no single action target".into()));
@@ -1009,7 +1030,7 @@ impl Browser {
     }
     fn guards(&self) -> Vec<(Source, ProtectedPath)> {
         let mut guards = Vec::new();
-        for source in &self.library.sources {
+        for source in self.library.sources.iter().filter(|s| s.sftp.is_none()) {
             guards.push((source.clone(), ProtectedPath { path: RelativePath::default(), subtree: false }));
             if let Some(policy) = self.library.writes.iter().find(|p| p.source == source.id) {
                 for protected in &policy.protected {
@@ -1018,13 +1039,16 @@ impl Browser {
             }
         }
         for member in self.library.collections.iter().flat_map(|c| c.members.iter()) {
-            if let Some(source) = self.source(member.source) {
+            if let Some(source) = self.source(member.source).filter(|s| s.sftp.is_none()) {
                 guards.push((source.clone(), ProtectedPath { path: member.path.clone(), subtree: false }));
             }
         }
         guards
     }
     fn policy(&self, source: SourceId) -> Result<&WritePolicy, EngineError> {
+        if self.source(source).is_some_and(|s| s.sftp.is_some()) {
+            return Err(EngineError("SFTP sources support browsing only".into()));
+        }
         self.library
             .writes
             .iter()
@@ -1211,6 +1235,66 @@ mod tests {
     use archiv_platform::LocalDirectoryReader;
     use std::time::{Duration, Instant};
 
+    struct RemoteFixture;
+    impl DirectoryReader for RemoteFixture {
+        fn read(
+            &self,
+            request: &ReadRequest,
+            cancel: &AtomicBool,
+            emit: &mut dyn FnMut(Vec<Entry>) -> bool,
+        ) -> Result<ReadSummary, archiv_platform::ReadError> {
+            let mut local = request.clone();
+            local.source.sftp = None;
+            LocalDirectoryReader.read(&local, cancel, emit)
+        }
+    }
+    #[test]
+    fn sftp_navigation_search_history_and_read_only_actions_share_engine_rules() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::create_dir(fixture.path().join("folder")).unwrap();
+        std::fs::write(fixture.path().join("folder/notes.txt"), b"safe").unwrap();
+        let source = Source {
+            id: SourceId(1),
+            root: fixture.path().to_owned(),
+            label: "Remote".into(),
+            nfs_remote: None,
+            sftp: Some(archiv_core::sftp::SftpConnection { host: "fixture".into(), user: String::new(), port: None }),
+        };
+        let settings = LibrarySettings { sources: vec![source.clone()], ..Default::default() };
+        let mut browser = Browser::new(Arc::new(RemoteFixture), Arc::new(|| {})).unwrap();
+        browser.configure(settings, fixture.path().join("config.json")).unwrap();
+        assert_eq!(browser.view.phase, Phase::Idle);
+        browser.execute(1, Command::Navigate(Location { source: source.id, path: RelativePath::default() })).unwrap();
+        settle(&mut browser);
+        let folder = browser.view.entries[0].id.clone();
+        browser.execute(2, Command::Open(folder)).unwrap();
+        settle(&mut browser);
+        let file = browser.view.entries[0].id.clone();
+        for (request, command) in (3..).zip([
+            Command::Launch(file.clone()),
+            Command::Copy(file.clone()),
+            Command::CopyPath(file.clone()),
+            Command::PreviewDelete(file.clone()),
+            Command::Rename(file.clone(), "renamed".into()),
+            Command::Paste(Location { source: source.id, path: RelativePath::default() }),
+        ]) {
+            assert!(browser.execute(request, command).is_err());
+        }
+        assert!(browser.file_action_availability(&file).unwrap_err().contains("browsing"));
+        assert!(!browser.operation_pending());
+        browser.execute(10, Command::Back).unwrap();
+        settle(&mut browser);
+        assert!(browser.view.location.as_ref().unwrap().path.as_path().as_os_str().is_empty());
+        browser.execute(11, Command::Search("notes".into())).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.entries[0].id, file);
+        assert!(browser.execute(12, Command::BrowseSourcePath(source.id, fixture.path().join("../outside"))).is_err());
+        browser.execute(13, Command::BrowseSourcePath(source.id, fixture.path().join("folder"))).unwrap();
+        settle(&mut browser);
+        assert_eq!(browser.view.entries[0].id, file);
+        assert_eq!(std::fs::read(fixture.path().join("folder/notes.txt")).unwrap(), b"safe");
+    }
+
     fn browser() -> Browser {
         Browser::new(Arc::new(LocalDirectoryReader), Arc::new(|| {})).unwrap()
     }
@@ -1234,6 +1318,7 @@ mod tests {
                     root: root.join(format!("disk{id}")),
                     label: format!("Disk {id}"),
                     nfs_remote: None,
+                    sftp: None,
                 })
                 .collect(),
             collections: vec![archiv_core::library::Collection {
@@ -1496,8 +1581,13 @@ mod tests {
         let fixture = tempfile::tempdir().unwrap();
         std::fs::create_dir(fixture.path().join("out")).unwrap();
         std::fs::write(fixture.path().join("notes.txt"), b"safe").unwrap();
-        let source =
-            Source { id: SourceId(1), root: fixture.path().to_owned(), label: "Fixture".into(), nfs_remote: None };
+        let source = Source {
+            id: SourceId(1),
+            root: fixture.path().to_owned(),
+            label: "Fixture".into(),
+            nfs_remote: None,
+            sftp: None,
+        };
         let mut config = LibrarySettings { sources: vec![source], ..Default::default() };
         let mut browser = browser();
         browser.configure(config.clone(), fixture.path().join("config/library.json")).unwrap();

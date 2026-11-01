@@ -1,10 +1,12 @@
 # Archiv
 
-A Rust-native Linux file manager for local folders and mounted NAS sources. Optional collections
+A Rust-native Linux file manager for local folders, mounted NAS sources and direct SFTP browsing. Optional collections
 combine folders visually across disks while preserving each physical location.
 
 - One File/Edit/View/Help and search row, bottom editable address, compact expandable file rows,
   draggable header dividers and a Details pane. Themes are configured only in Preferences.
+- Direct read-only SFTP browsing using OpenSSH aliases, SSH keys/agent and verified host keys.
+  Configure it in Preferences → Sources; no mount is required. [SFTP setup](docs/sftp.md).
 - Configurable sources/collections, no built-in media categories, no automatic startup scanning.
 - Right-click physical files/folders for Open, Copy, Copy path, Paste, Rename and permanent Delete.
   Copy/Paste uses Archiv's session clipboard. Delete first shows every physical target and requires
@@ -35,7 +37,7 @@ View → Cancel operation requests cancellation; completed changes may remain.
 
 Library version-1 JSON uses `sources`, `collections`, `openers` and `writes`. It is saved at
 `$XDG_CONFIG_HOME/archiv/library.json` or `~/.config/archiv/library.json`; `--library FILE` chooses
-another path for the library file. Theme, UI preferences and window/layout state are stored in
+another path for the library file. `--list-source ID` lists a saved local/NFS/SFTP source headlessly. Theme, UI preferences and window/layout state are stored in
 `$XDG_CONFIG_HOME/archiv/app.ron` (normally `~/.config/archiv/app.ron`). All default application
 settings live together in `~/.config/archiv/`. Open folder adds a temporary source; save one in Preferences before enabling writes.
 [Example](examples/archiv.example.json), [NAS setup](docs/nas-setup.md), [file actions](docs/file-actions.md).

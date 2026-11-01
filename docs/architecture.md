@@ -25,7 +25,7 @@ Do not couple the domain model to `/mnt/diskN`, a username, one SSH alias or a s
 Core models, the Linux directory reader, the bounded browsing engine and the native shell now
 exist. The executable supports a GUI and `--list` through the same engine. The UI uses upstream
 egui/eframe 0.37 and Glow; rustix supplies safe descriptor-relative Linux APIs. Optional merged collections and guarded mounted NFS sources now exist. Permanent delete, rename, copy/paste and configurable external application launches are implemented.
-No persistent index, transfer or SSH transport adapter is present. Enforce dependency direction
+A bounded read-only SFTP v3 adapter uses system OpenSSH; no persistent index or queued transfer adapter is present. Enforce dependency direction
 in reviews; no automated layer checker exists yet.
 
 ## Identity and visual merging
@@ -73,7 +73,7 @@ Record actual enforcement scope in the UI. Details: [safety.md](safety.md).
 
 ## Persistence and configuration
 
-Versioned JSON library settings are implemented; transfer configuration and a local SQLite metadata
+Versioned JSON library settings include optional direct SFTP connections; transfer configuration and a local SQLite metadata
 index are not. The supported example JSON contains placeholder sources and disabled writes. Library version 1 rejects unknown
 fields and invalid references. Settings are saved by bounded engine workers using a private
 same-directory temporary file, file sync, atomic rename and parent-directory sync. A directory
@@ -91,7 +91,7 @@ from NFS mounts. Transfers over SSH bypass any Samba recycle policy.
 
 ## Deliberately deferred
 
-Aliases, transfer-policy parsing, indexing, cross-disk mutation/transfer, SSH authentication,
+Aliases, transfer-policy parsing, indexing, cross-disk mutation/transfer, interactive SSH authentication,
 packaging, CI services and a NAS agent. The design is
 small enough to revise as the first read-only slice supplies evidence; do not add a plugin framework
 or separate service for every crate.
@@ -105,3 +105,11 @@ then publishes a new destination without removing the source. Delete unlinks con
 items. See file-actions.md for partial results, staging, concurrency and durability limits.
 Application launches are structured worker operations with bounded child tracking/reaping.
 Rendering never scans storage, waits for a process or edits NFS/mount configuration.
+
+## Direct SFTP browsing
+
+Sources may carry an optional credential-free SFTP endpoint; their root is then a remote absolute
+path. The platform reader routes those requests to a read-only SFTP v3 adapter over system
+OpenSSH. Engine workers, identities, navigation, collections and search remain shared. Remote
+actions are denied independently of local permissions, and remote roots never enter local
+filesystem adapters or protection identity comparisons. See [SFTP setup and bounds](sftp.md).
